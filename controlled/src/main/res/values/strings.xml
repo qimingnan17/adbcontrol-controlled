@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AdbControl 被控端</string>
+
+    <!-- 前台服务通知 -->
+    <string name="notif_channel_foreground">Agent 常驻服务</string>
+    <string name="notif_channel_foreground_desc">保持设备在线与可控,不可清除。</string>
+    <string name="notif_foreground_title">AdbControl Agent 运行中</string>
+    <string name="notif_foreground_text">设备已上线,等待主控指令</string>
+    <string name="notif_foreground_subtext">MQTT 已连接</string>
+
+    <!-- 五大服务标签 -->
+    <string name="accessibility_service_label">AdbControl 无障碍服务</string>
+    <string name="accessibility_service_desc">监听窗口切换、模拟手势、截屏、屏蔽指定 UI 控件</string>
+    <string name="device_admin_label">AdbControl 设备管理</string>
+    <string name="notification_listener_label">AdbControl 通知监听</string>
+
+    <!-- 配对 / 权限自检 UI -->
+    <string name="pair_title">设备配对</string>
+    <string name="pair_scan_qr">扫描配对二维码</string>
+    <string name="pair_status_unpaired">未配对</string>
+    <string name="pair_status_paired">已配对:%1$s</string>
+    <string name="permission_check">权限自检</string>
+    <string name="start_agent">启动 Agent 服务</string>
+    <string name="stop_agent">停止 Agent 服务</string>
+
+    <!-- 权限项标签 -->
+    <string name="cap_shizuku">Shizuku 桥接</string>
+    <string name="cap_root">Root</string>
+    <string name="cap_accessibility">无障碍服务</string>
+    <string name="cap_device_admin">设备管理</string>
+    <string name="cap_usage_stats">使用情况访问</string>
+    <string name="cap_notification_listener">通知监听</string>
+    <string name="cap_battery_whitelist">电池白名单</string>
+    <string name="cap_location">定位权限</string>
+    <string name="cap_post_notifications">通知权限</string>
+
+    <string name="badge_must">MUST</string>
+    <string name="badge_opt">OPT</string>
+    <string name="status_granted">已授权</string>
+    <string name="status_denied">未授权</string>
+</resources>

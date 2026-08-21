@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 深色玻璃主题基底。运行时由 Compose Material3 主题接管,这里仅提供启动屏样式。 -->
+    <style name="Theme.AdbControlled" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg_base</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="o_mr1">shortEdges</item>
+    </style>
+
+</resources>
