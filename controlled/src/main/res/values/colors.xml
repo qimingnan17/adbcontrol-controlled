@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 玻璃拟态深色主题基底(对齐 README 第十五章 AppColors) -->
+    <color name="bg_base">#FF060812</color>
+    <color name="bg_deep">#FF02030A</color>
+    <color name="cyan">#FF4FD1E0</color>
+    <color name="magenta">#FFFF5FAD</color>
+    <color name="emerald">#FF4ADE80</color>
+    <color name="amber">#FFFBBF24</color>
+    <color name="rose">#FFFF6B6B</color>
+    <color name="slate">#FF64748B</color>
+    <color name="text_primary">#FFE8ECF4</color>
+    <color name="text_secondary">#FFC7CEDD</color>
+</resources>
