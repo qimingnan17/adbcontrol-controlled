@@ -55,6 +55,9 @@ class ControlledService : LifecycleService() {
     @Inject lateinit var dispatcher: CommandDispatcher
     @Inject lateinit var miuiAdapter: MiuiAdapter
 
+    /** agent 是否已用有效配置启动过;配对完成后由 onStartCommand 重载触发。 */
+    @Volatile private var agentStarted = false
+
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "onCreate")
@@ -77,6 +80,7 @@ class ControlledService : LifecycleService() {
             Log.w(TAG, "no config, agent idle until paired")
             return
         }
+        agentStarted = true
         lifecycleScope.launch {
             mqttManager.listener = commandHandler
             mqttManager.start(config)
@@ -93,6 +97,7 @@ class ControlledService : LifecycleService() {
             mqttManager.stop()
             telemetryEngine.stop()
             configStore.save(config)
+            agentStarted = true
             mqttManager.listener = commandHandler
             mqttManager.start(config)
             telemetryEngine.start(config)
@@ -101,6 +106,12 @@ class ControlledService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        // 服务常在配对之前就被拉起(开机自启/WorkManager 兜底),此时无配置处于 idle;
+        // 配对完成后 UI 再次 start 服务,在此重载配置并拉起 MQTT/遥测
+        if (!agentStarted) {
+            Log.i(TAG, "onStartCommand: agent not started yet, (re)loading config")
+            startAgent()
+        }
         // START_STICKY:系统尽量重建服务(配合 L6 onTaskRemoved)
         return START_STICKY
     }
@@ -174,14 +185,27 @@ class ControlledService : LifecycleService() {
     private fun startForegroundCompat() {
         val notification = buildForegroundNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // Android 14+:必须指定 foregroundServiceType
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
-            )
+            // Android 14+:location 类型要求 ACCESS_FINE/COARSE 已授予,未授权时携带会抛
+            // SecurityException(配对前定位权限被拒 → FGS 崩溃循环,实测复现)。
+            // 动态裁剪:未授权就去掉 location,仅保留 connectedDevice|dataSync。
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            val hasLocation = androidx.core.content.ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    this, android.Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (hasLocation) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            }
+            try {
+                startForeground(NOTIFICATION_ID, notification, types)
+            } catch (e: Exception) {
+                // 兜底:类型仍被拒时不带类型启动,保住服务进程(遥测里非定位部分照常工作)
+                Log.e(TAG, "startForeground with types failed, fallback to untyped", e)
+                startForeground(NOTIFICATION_ID, notification)
+            }
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }

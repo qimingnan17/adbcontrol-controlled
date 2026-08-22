@@ -1,12 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 无障碍服务配置。监听窗口状态变化用于应用行为上报,启用手势分派与截屏。 -->
+<!-- 无障碍服务配置。监听窗口状态变化用于应用行为上报,启用手势分派与截屏。
+     注意:绝不请求 flagRequestTouchExplorationMode —— 触摸探索会把用户的点按变成
+     "聚焦+双击",普通触控完全被破坏(实测:开启本服务后屏幕"无法控制")。
+     本服务只消费事件与分派手势,不需要探索模式。 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeNotificationStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows|flagRequestTouchExplorationMode|flagRequestAccessibilityButton"
+    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows|flagRequestAccessibilityButton"
     android:canPerformGestures="true"
     android:canRetrieveWindowContent="true"
-    android:canRequestTouchExplorationMode="true"
+    android:canRequestTouchExplorationMode="false"
     android:description="@string/accessibility_service_desc"
     android:notificationTimeout="100"
     android:packageNames="" />

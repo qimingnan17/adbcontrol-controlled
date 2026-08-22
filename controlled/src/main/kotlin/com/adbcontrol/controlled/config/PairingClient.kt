@@ -46,6 +46,8 @@ class PairingClient(
             kotlinx.serialization.json.JsonObject.serializer(),
             buildJsonObject {
                 put("pairToken", payload.pairToken)
+                // 后端 PairTokenPayload 的 serverUrl 为必填(无默认值),缺失会反序列化 400
+                put("serverUrl", payload.serverUrl)
                 put("deviceId", payload.deviceId)
                 put("deviceName", deviceName)
                 put("pubKey", pubKey)
