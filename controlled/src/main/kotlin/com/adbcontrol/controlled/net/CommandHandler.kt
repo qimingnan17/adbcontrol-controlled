@@ -6,6 +6,10 @@ import com.adbcontrol.shared.WsMessage
 import com.adbcontrol.shared.model.Command
 import com.adbcontrol.shared.model.ExecutionResult
 import com.adbcontrol.controlled.executor.CommandDispatcher
+import com.adbcontrol.controlled.apptime.AppTimeController
+import com.adbcontrol.controlled.notification.ReminderNotificationCenter
+import com.adbcontrol.shared.model.CommandCategory
+import com.adbcontrol.shared.model.ReminderPayload
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,6 +30,8 @@ class CommandHandler(
     private val dispatcher: CommandDispatcher,
     private val mqttManager: MqttManager,
     private val json: Json,
+    private val appTimeController: AppTimeController,
+    private val notificationCenter: ReminderNotificationCenter,
 ) : MqttManager.MqttMessageListener {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -40,12 +46,62 @@ class CommandHandler(
         trimProcessed()
         scope.launch {
             val started = System.currentTimeMillis()
-            val result = dispatcher.dispatch(command, message.id)
+            // APP_TIME 配置类命令不下 executor 链,直接落到本地 AppTimeController
+            val result = handleAppTimeConfig(message.id, command)
+                ?: dispatcher.dispatch(command, message.id)
             val duration = System.currentTimeMillis() - started
             val finalResult = if (result.durationMs == 0L) result.copy(durationMs = duration) else result
             publishResult(finalResult, message.id)
         }
     }
+
+    /**
+     * 处理应用时间管控配置(setLimit / clearLimit / setWindow / clearWindow)。
+     * 返回 null 表示该命令仍需走 executor 链(如 suspend/unsuspend/hide)。
+     */
+    private fun handleAppTimeConfig(commandId: String, command: Command): ExecutionResult? {
+        if (command.category != CommandCategory.APP_TIME) return null
+        val pkg = command.params["pkg"]?.trim().orEmpty()
+        return when (command.action) {
+            "setLimit" -> {
+                if (pkg.isEmpty()) return failResult(commandId, "missing pkg")
+                val minutes = command.params["minutes"]?.toIntOrNull() ?: 0
+                if (minutes <= 0) {
+                    appTimeController.clearLimit(pkg)
+                    ExecutionResult(commandId = commandId, success = true, output = "limit cleared")
+                } else {
+                    appTimeController.setLimit(pkg, minutes)
+                    ExecutionResult(commandId = commandId, success = true, output = "limit set: $minutes min")
+                }
+            }
+            "clearLimit" -> {
+                if (pkg.isEmpty()) return failResult(commandId, "missing pkg")
+                appTimeController.clearLimit(pkg)
+                ExecutionResult(commandId = commandId, success = true, output = "limit cleared")
+            }
+            "setWindow" -> {
+                if (pkg.isEmpty()) return failResult(commandId, "missing pkg")
+                val start = command.params["start"].orEmpty()
+                val end = command.params["end"].orEmpty()
+                if (start.isEmpty() || end.isEmpty()) {
+                    appTimeController.clearWindow(pkg)
+                    ExecutionResult(commandId = commandId, success = true, output = "window cleared")
+                } else {
+                    appTimeController.setWindow(pkg, start, end)
+                    ExecutionResult(commandId = commandId, success = true, output = "window set: $start-$end")
+                }
+            }
+            "clearWindow" -> {
+                if (pkg.isEmpty()) return failResult(commandId, "missing pkg")
+                appTimeController.clearWindow(pkg)
+                ExecutionResult(commandId = commandId, success = true, output = "window cleared")
+            }
+            else -> null
+        }
+    }
+
+    private fun failResult(commandId: String, error: String): ExecutionResult =
+        ExecutionResult(commandId = commandId, success = false, output = error)
 
     private fun publishResult(result: ExecutionResult, originalId: String) {
         val deviceId = mqttManager.currentDeviceId() ?: return
@@ -76,6 +132,14 @@ class CommandHandler(
 
     override fun onReminder(message: WsMessage) {
         Log.i(TAG, "reminder received: ${message.id}")
+        // 解析载荷并弹通知;解析失败全静默丢弃(防错配置导致崩溃)
+        val payload = runCatching {
+            json.decodeFromString(ReminderPayload.serializer(), message.payload)
+        }.getOrElse {
+            Log.e(TAG, "reminder payload decode failed: ${message.payload}")
+            return
+        }
+        notificationCenter.show(message.id, payload)
     }
 
     override fun onPush(message: WsMessage) {

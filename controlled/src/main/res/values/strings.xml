@@ -9,6 +9,10 @@
     <string name="notif_foreground_text">设备已上线,等待主控指令</string>
     <string name="notif_foreground_subtext">MQTT 已连接</string>
 
+    <!-- 主控下发的任务栏通知通道 -->
+    <string name="notif_channel_remote_task">主控通知 / 定时提醒</string>
+    <string name="notif_channel_remote_task_desc">主控端远程发送的提醒通知,可含自定义操作按钮。</string>
+
     <!-- 五大服务标签 -->
     <string name="accessibility_service_label">AdbControl 无障碍服务</string>
     <string name="accessibility_service_desc">监听窗口切换、模拟手势、截屏、屏蔽指定 UI 控件</string>
