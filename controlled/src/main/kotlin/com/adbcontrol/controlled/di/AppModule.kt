@@ -9,6 +9,7 @@ import com.adbcontrol.controlled.executor.CommandDispatcher
 import com.adbcontrol.controlled.net.CommandHandler
 import com.adbcontrol.controlled.net.MessageCodec
 import com.adbcontrol.controlled.net.MqttManager
+import com.adbcontrol.controlled.notification.ReminderNotificationCenter
 import com.adbcontrol.controlled.storage.R2StorageClient
 import com.adbcontrol.controlled.telemetry.ActivityReporter
 import com.adbcontrol.controlled.telemetry.HealthReporter
@@ -63,7 +64,9 @@ object AppModule {
         dispatcher: CommandDispatcher,
         mqttManager: MqttManager,
         json: Json,
-    ): CommandHandler = CommandHandler(dispatcher, mqttManager, json)
+        appTimeController: AppTimeController,
+        notificationCenter: ReminderNotificationCenter,
+    ): CommandHandler = CommandHandler(dispatcher, mqttManager, json, appTimeController, notificationCenter)
 
     // ---------- 遥测 ----------
 

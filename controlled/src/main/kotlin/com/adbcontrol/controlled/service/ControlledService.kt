@@ -17,6 +17,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequest
 import androidx.work.WorkManager
 import com.adbcontrol.controlled.R
+import com.adbcontrol.controlled.apptime.AppTimeController
 import com.adbcontrol.controlled.config.ConfigStore
 import com.adbcontrol.controlled.executor.CommandDispatcher
 import com.adbcontrol.controlled.net.CommandHandler
@@ -54,6 +55,10 @@ class ControlledService : LifecycleService() {
     @Inject lateinit var commandHandler: CommandHandler
     @Inject lateinit var dispatcher: CommandDispatcher
     @Inject lateinit var miuiAdapter: MiuiAdapter
+    @Inject lateinit var appTimeController: AppTimeController
+
+    /** agent 是否已用有效配置启动过;配对完成后由 onStartCommand 重载触发。 */
+    @Volatile private var agentStarted = false
 
     /** agent 是否已用有效配置启动过;配对完成后由 onStartCommand 重载触发。 */
     @Volatile private var agentStarted = false
@@ -85,6 +90,7 @@ class ControlledService : LifecycleService() {
             mqttManager.listener = commandHandler
             mqttManager.start(config)
             telemetryEngine.start(config)
+            appTimeController.start()
         }
     }
 
@@ -139,6 +145,7 @@ class ControlledService : LifecycleService() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy")
+        runCatching { appTimeController.stop() }
         runCatching { telemetryEngine.stop() }
         runCatching { mqttManager.stop() }
         super.onDestroy()

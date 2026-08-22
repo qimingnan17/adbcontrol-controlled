@@ -14,12 +14,12 @@ import java.util.concurrent.TimeUnit
 /**
  * 遥测引擎。README 第五章。
  *
- * 周期(README 5.x):
- * - Status:5 分钟 + 显著变化触发(QoS 0)
- * - Location:15 分钟(QoS 0)
+ * 周期(README 5.x,为上报时延优化后):
+ * - Status:兜底 2 分钟 + 显著变化触发(每 10 秒扫描,QoS 0)
+ * - Location:5 分钟(QoS 0)
  * - Activity:事件驱动(由 AccessibilityService 直接调 reporter)
  * - Usage:整点错峰(QoS 1)
- * - Health:30 分钟(QoS 1)
+ * - Health:10 分钟(QoS 1)
  *
  * 启动时全量上报一次 Health + Status。
  */
@@ -42,33 +42,33 @@ class TelemetryEngine(
         runOnce { healthReporter.reportOnce(deviceId) }
         runOnce { statusReporter.reportOnce(deviceId) }
 
-        // Status:5 分钟 + 显著变化(每 30 秒检查变化)
+        // Status:兜底 2 分钟 + 显著变化(每 10 秒检查;电量±5%/网络切换/屏幕开关立即上报)
         jobs += scope.launch {
             while (true) {
-                delay(TimeUnit.SECONDS.toMillis(30))
+                delay(TimeUnit.SECONDS.toMillis(10))
                 if (statusReporter.hasSignificantChange()) {
                     statusReporter.reportOnce(deviceId)
                 } else {
-                    // 兜底每 5 分钟
-                    delay(TimeUnit.MINUTES.toMillis(5) - TimeUnit.SECONDS.toMillis(30))
+                    // 兜底每 2 分钟
+                    delay(TimeUnit.MINUTES.toMillis(2) - TimeUnit.SECONDS.toMillis(10))
                     statusReporter.reportOnce(deviceId)
                 }
             }
         }
 
-        // Location:15 分钟
+        // Location:5 分钟
         jobs += scope.launch {
             while (true) {
                 locationReporter.reportOnce(deviceId)
-                delay(TimeUnit.MINUTES.toMillis(15))
+                delay(TimeUnit.MINUTES.toMillis(5))
             }
         }
 
-        // Health:30 分钟
+        // Health:10 分钟
         jobs += scope.launch {
             while (true) {
                 healthReporter.reportOnce(deviceId)
-                delay(TimeUnit.MINUTES.toMillis(30))
+                delay(TimeUnit.MINUTES.toMillis(10))
             }
         }
 
