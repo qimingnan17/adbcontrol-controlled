@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,8 +27,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -101,6 +106,37 @@ private fun SetupScreen(
     viewModel: ControlledViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    var showManualPair by remember { mutableStateOf(false) }
+
+    // ZXing 内嵌扫码(离线、免 GMS);结果文本交 ViewModel 解析并配对
+    val qrScanLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        com.journeyapps.barcodescanner.ScanContract()
+    ) { result ->
+        if (!result.contents.isNullOrEmpty()) {
+            viewModel.pairViaQrRaw(result.contents)
+        }
+    }
+    val launchQrScan = {
+        qrScanLauncher.launch(
+            com.journeyapps.barcodescanner.ScanOptions().apply {
+                setDesiredBarcodeFormats(com.journeyapps.barcodescanner.ScanOptions.QR_CODE)
+                setPrompt("将 Web 控制台的配对二维码对准取景框")
+                setBeepEnabled(false)
+                setOrientationLocked(true)
+            }
+        )
+    }
+
+    // 配对成功后:关闭手动输入对话框,并自动拉起 Agent 服务(服务可能在配对前已 idle 启动,
+    // 会经 onStartCommand 重载配置连 MQTT)
+    var wasPaired by remember { mutableStateOf(uiState.paired) }
+    LaunchedEffect(uiState.paired) {
+        if (uiState.paired) {
+            showManualPair = false
+            if (!wasPaired) onStartService()
+        }
+        wasPaired = uiState.paired
+    }
 
     Column(
         modifier = Modifier
@@ -115,7 +151,24 @@ private fun SetupScreen(
             fontWeight = FontWeight.SemiBold,
         )
 
-        PairingCard(uiState.paired, uiState.deviceId)
+        PairingCard(
+            paired = uiState.paired,
+            deviceId = uiState.deviceId,
+            pairing = uiState.pairing,
+            pairError = uiState.pairError,
+            onScan = launchQrScan,
+            onManual = { showManualPair = true },
+        )
+
+        if (showManualPair) {
+            ManualPairDialog(
+                busy = uiState.pairing,
+                onDismiss = { showManualPair = false },
+                onConfirm = { serverUrl, pairToken, deviceId ->
+                    viewModel.pairManual(serverUrl, pairToken, deviceId)
+                },
+            )
+        }
 
         CapabilityChecklist(uiState.capabilities)
 
@@ -134,7 +187,14 @@ private fun SetupScreen(
 }
 
 @Composable
-private fun PairingCard(paired: Boolean, deviceId: String) {
+private fun PairingCard(
+    paired: Boolean,
+    deviceId: String,
+    pairing: Boolean,
+    pairError: String?,
+    onScan: () -> Unit,
+    onManual: () -> Unit,
+) {
     GlassCard {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -152,16 +212,106 @@ private fun PairingCard(paired: Boolean, deviceId: String) {
             )
             if (!paired) {
                 Spacer(modifier = Modifier.height(12.dp))
-                Button(onClick = { /* TODO: 触发 PairingScanner */ }) {
-                    Text(stringResourceSafe(R.string.pair_scan_qr))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onScan, enabled = !pairing) {
+                        Text(if (pairing) "配对中…" else stringResourceSafe(R.string.pair_scan_qr))
+                    }
+                    Button(onClick = onManual, enabled = !pairing) {
+                        Text("手动输入配对码")
+                    }
                 }
+            }
+            pairError?.let {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = it,
+                    color = AppColors.rose,
+                    fontSize = 12.sp,
+                )
             }
         }
     }
 }
 
+/** 手动配对:国行 ROM 无 Google Play Services 时 ML Kit 扫码不可用,走文本输入兜底。 */
+@Composable
+private fun ManualPairDialog(
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (serverUrl: String, pairToken: String, deviceId: String) -> Unit,
+) {
+    var serverUrl by remember { mutableStateOf(DEFAULT_SERVER_URL) }
+    var pairToken by remember { mutableStateOf("") }
+    var deviceId by remember { mutableStateOf("") }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("手动输入配对码", color = AppColors.textPrimary) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "在 Web 控制台「令牌管理」生成令牌后,将以下三项复制到本机输入。",
+                    color = AppColors.textSecondary,
+                    fontSize = 12.sp,
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = serverUrl,
+                    onValueChange = { serverUrl = it },
+                    label = { Text("服务器地址") },
+                    singleLine = true,
+                    enabled = !busy,
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = pairToken,
+                    onValueChange = { pairToken = it },
+                    label = { Text("配对令牌 (pt_ 开头)") },
+                    singleLine = true,
+                    enabled = !busy,
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = deviceId,
+                    onValueChange = { deviceId = it },
+                    label = { Text("设备 ID (dev_ 开头)") },
+                    singleLine = true,
+                    enabled = !busy,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(serverUrl, pairToken, deviceId) },
+                enabled = !busy && serverUrl.isNotBlank() && pairToken.isNotBlank() && deviceId.isNotBlank(),
+            ) {
+                Text(if (busy) "配对中…" else "配对")
+            }
+        },
+        dismissButton = {
+            Button(onClick = onDismiss, enabled = !busy) { Text("取消") }
+        },
+    )
+}
+
+/** 手动配对默认服务器地址;扫码路径的 serverUrl 来自 QR 载荷,不受此影响。 */
+private const val DEFAULT_SERVER_URL = "https://adbcontrol-backend.fly.dev"
+
 @Composable
 private fun CapabilityChecklist(caps: List<CapabilityItem>) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+
+    // 从系统设置授权返回(ON_RESUME)时递增 tick,触发重新检测
+    var tick by remember { mutableStateOf(0) }
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) tick++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // 叠加系统级真实检测(无障碍/设备管理/使用情况/通知监听/电池白名单),并挂接跳转动作
+    val items = remember(caps, tick) { caps.map { it.resolved(ctx) } }
+
     GlassCard {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -170,12 +320,101 @@ private fun CapabilityChecklist(caps: List<CapabilityItem>) {
                 fontSize = 14.sp,
             )
             Spacer(modifier = Modifier.height(12.dp))
-            caps.forEach { item ->
+            items.forEach { item ->
                 CapabilityRow(item)
                 Spacer(modifier = Modifier.height(8.dp))
             }
         }
     }
+}
+
+/** 用系统真实状态覆盖硬编码 false 的检测项,并按权限类型挂"去授权"跳转。 */
+private fun CapabilityItem.resolved(ctx: android.content.Context): CapabilityItem {
+    val granted: Boolean? = when (label) {
+        "无障碍服务" -> {
+            val enabled = android.provider.Settings.Secure.getString(
+                ctx.contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ).orEmpty()
+            enabled.contains("ControlledAccessibilityService")
+        }
+        "设备管理" -> {
+            val dpm = ctx.getSystemService(android.content.Context.DEVICE_POLICY_SERVICE)
+                as android.app.admin.DevicePolicyManager
+            dpm.isAdminActive(
+                android.content.ComponentName(ctx, com.adbcontrol.controlled.admin.ControlledDeviceAdminReceiver::class.java)
+            )
+        }
+        "使用情况访问" -> {
+            val appOps = ctx.getSystemService(android.content.Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+            appOps.unsafeCheckOpNoThrow(
+                android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                android.os.Process.myUid(), ctx.packageName,
+            ) == android.app.AppOpsManager.MODE_ALLOWED
+        }
+        "通知监听" -> {
+            val enabled = android.provider.Settings.Secure.getString(
+                ctx.contentResolver, "enabled_notification_listeners"
+            ).orEmpty()
+            enabled.contains(ctx.packageName)
+        }
+        "电池白名单" -> {
+            val pm = ctx.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            pm.isIgnoringBatteryOptimizations(ctx.packageName)
+        }
+        else -> null
+    }
+    val action: ((android.content.Context) -> Unit)? = when (label) {
+        "Shizuku 桥接" -> { c ->
+            // 已安装则拉起 Shizuku 授权;未安装则跳应用商店页
+            c.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")?.let {
+                runCatching { c.startActivity(it) }
+            } ?: runCatching {
+                c.startActivity(
+                    android.content.Intent(
+                        android.content.Intent.ACTION_VIEW,
+                        android.net.Uri.parse("market://details?id=moe.shizuku.privileged.api")
+                    )
+                )
+            }
+        }
+        "无障碍服务" -> { c ->
+            runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        }
+        "设备管理" -> { c ->
+            runCatching {
+                c.startActivity(
+                    android.content.Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                        putExtra(
+                            android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN,
+                            android.content.ComponentName(c, com.adbcontrol.controlled.admin.ControlledDeviceAdminReceiver::class.java),
+                        )
+                        putExtra(
+                            android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                            "激活设备管理以支持远程锁屏等控制指令",
+                        )
+                    }
+                )
+            }
+        }
+        "使用情况访问" -> { c ->
+            runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+        }
+        "通知监听" -> { c ->
+            runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+        }
+        "电池白名单" -> { c ->
+            runCatching {
+                c.startActivity(
+                    android.content.Intent(
+                        android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        android.net.Uri.parse("package:${c.packageName}"),
+                    )
+                )
+            }
+        }
+        else -> null
+    }
+    return copy(granted = granted ?: this.granted, action = action)
 }
 
 @Composable
@@ -223,6 +462,7 @@ private fun OemKeepAliveCard() {
 
 @Composable
 private fun CapabilityRow(item: CapabilityItem) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -247,6 +487,16 @@ private fun CapabilityRow(item: CapabilityItem) {
                 color = if (item.granted) AppColors.emerald else AppColors.rose,
                 fontSize = 12.sp,
             )
+            if (!item.granted && item.action != null) {
+                Spacer(modifier = Modifier.size(8.dp))
+                Text(
+                    text = "去授权",
+                    color = AppColors.cyan,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { item.action?.invoke(ctx) },
+                )
+            }
         }
     }
 }
@@ -307,4 +557,10 @@ private fun stringResourceSafe(id: Int, vararg args: Any): String {
     return runCatching { ctx.getString(id, *args) }.getOrDefault(ctx.getString(id))
 }
 
-data class CapabilityItem(val label: String, val granted: Boolean, val badge: String)
+data class CapabilityItem(
+    val label: String,
+    val granted: Boolean,
+    val badge: String,
+    /** 未授权时的"去授权"跳转动作(打开对应系统设置页);null 表示无可引导入口(如 Root) */
+    val action: ((android.content.Context) -> Unit)? = null,
+)

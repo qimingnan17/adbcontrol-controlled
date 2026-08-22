@@ -19,6 +19,9 @@
     <!-- 前台通知(Android 13+ 需运行时申请) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 相机(QR 配对扫码;zxing CaptureActivity 运行时自行弹授权) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <!-- 电池优化白名单 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
@@ -69,6 +72,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ZXing 扫码 Activity:离线扫码界面。库自带的 zxing_CaptureTheme 即为
+             AppCompat 主题,无需覆盖;仅锁定竖屏。 -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="portrait"
+            tools:replace="android:screenOrientation" />
 
         <!-- 常驻前台 Service(11 层保活核心) -->
         <service

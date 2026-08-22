@@ -2,43 +2,19 @@ package com.adbcontrol.controlled.config
 
 import android.content.Context
 import com.adbcontrol.shared.model.PairTokenPayload
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
- * QR 配对扫码器。README 8.3。
+ * QR 配对载荷解析。README 8.3。
  *
- * 用 MLKit GmsBarcodeScanner(无需 CameraX 配置,系统级扫码 UI)。
- * 解析 QR 为 [PairTokenPayload]。
+ * 相机界面由 zxing-android-embedded 的 CaptureActivity 提供(离线、免 GMS,
+ * 见 MainActivity 的 ScanContract 调用);本类只负责把扫到的文本解析为
+ * [PairTokenPayload]。原 ML Kit GmsBarcodeScanner 依赖 Google Play 运行时
+ * 下载扫码模块,国行 ROM 不可用,已移除。
  */
-class PairingScanner(context: Context) {
+class PairingScanner {
 
-    private val scanner = GmsBarcodeScanning.getClient(context)
-
-    /** 启动扫码,返回解析出的 [PairTokenPayload] 或异常。 */
-    suspend fun scan(): PairTokenPayload = suspendCancellableCoroutine { cont ->
-        // GMS Task<Barcode> 没有 cancel(),只能用 isActive 过滤回调。
-        // 如果协程被取消,回调里通过 cont.isActive 检查跳过 resume,避免资源泄漏。
-        val task = scanner.startScan()
-        task
-            .addOnSuccessListener { barcode ->
-                if (!cont.isActive) return@addOnSuccessListener // 协程已取消(如用户退出),不再 resume
-                val raw = barcode.rawValue
-                if (raw == null) {
-                    cont.resumeWithException(IllegalStateException("empty barcode"))
-                    return@addOnSuccessListener
-                }
-                runCatching { parse(raw) }
-                    .onSuccess { if (cont.isActive) cont.resume(it) }
-                    .onFailure { if (cont.isActive) cont.resumeWithException(it) }
-            }
-            .addOnFailureListener { if (cont.isActive) cont.resumeWithException(it) }
-    }
-
-    private fun parse(raw: String): PairTokenPayload {
-        // 支持 {pairToken,serverUrl,deviceId,...} JSON 与 "pairToken|serverUrl|deviceId" 文本
+    /** 解析扫码结果:支持 {pairToken,serverUrl,deviceId,...} JSON 与 "pairToken|serverUrl|deviceId" 文本。 */
+    fun parse(raw: String): PairTokenPayload {
         return runCatching {
             json.decodeFromString(PairTokenPayload.serializer(), raw)
         }.getOrElse {
@@ -61,7 +37,7 @@ class PairingScanner(context: Context) {
         @Volatile private var instance: PairingScanner? = null
         fun get(context: Context): PairingScanner =
             instance ?: synchronized(this) {
-                instance ?: PairingScanner(context.applicationContext).also { instance = it }
+                instance ?: PairingScanner().also { instance = it }
             }
     }
 }

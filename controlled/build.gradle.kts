@@ -118,8 +118,10 @@ dependencies {
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.shared)
 
-    // MLKit code scanner (QR pairing)
-    implementation(libs.mlkit.code.scanner)
+    // QR 扫码:内嵌 ZXing(离线完整扫码界面)。原 ML Kit GmsBarcodeScanner 运行时需从
+    // Google Play 下载 Barcode UI 模块,国行 ROM 无 Play 服务时永远卡在"模块下载中"。
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("androidx.appcompat:appcompat:1.7.0")
 
     // Play App Update
     implementation(libs.play.app.update)

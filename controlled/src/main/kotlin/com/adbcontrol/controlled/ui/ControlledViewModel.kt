@@ -1,11 +1,16 @@
 package com.adbcontrol.controlled.ui
 
+import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.adbcontrol.controlled.config.ConfigStore
+import com.adbcontrol.controlled.config.PairingClient
+import com.adbcontrol.controlled.config.PairingScanner
 import com.adbcontrol.controlled.executor.CommandDispatcher
 import com.adbcontrol.controlled.executor.RootExecutor
 import com.adbcontrol.controlled.executor.ShizukuExecutor
+import com.adbcontrol.shared.model.AppConfig
+import com.adbcontrol.shared.model.PairTokenPayload
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +26,8 @@ class ControlledViewModel @Inject constructor(
     private val dispatcher: CommandDispatcher,
     private val shizukuExecutor: ShizukuExecutor,
     private val rootExecutor: RootExecutor,
+    private val pairingScanner: PairingScanner,
+    private val pairingClient: PairingClient,
 ) : ViewModel() {
 
     data class UiState(
@@ -28,6 +35,10 @@ class ControlledViewModel @Inject constructor(
         val deviceId: String = "",
         val serviceRunning: Boolean = false,
         val capabilities: List<CapabilityItem> = emptyList(),
+        /** 配对请求进行中(扫码或手动) */
+        val pairing: Boolean = false,
+        /** 最近一次配对失败原因,展示在配对卡片中 */
+        val pairError: String? = null,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -55,6 +66,72 @@ class ControlledViewModel @Inject constructor(
                 _uiState.value = state
             }
         }
+    }
+
+    /** 扫码结果配对:相机界面由 zxing CaptureActivity 承担(见 MainActivity),此处只消费扫码文本。 */
+    fun pairViaQrRaw(raw: String) {
+        if (_uiState.value.pairing) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(pairing = true, pairError = null)
+            try {
+                val payload = try {
+                    pairingScanner.parse(raw)
+                } catch (e: Exception) {
+                    throw IllegalStateException("二维码内容不是有效的配对载荷")
+                }
+                performPair(payload)
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(pairing = false, pairError = "配对失败:${friendly(e)}")
+            }
+        }
+    }
+
+    /** 手动配对:三项均来自 Web 控制台「令牌管理」生成结果。 */
+    fun pairManual(serverUrl: String, pairToken: String, deviceId: String) {
+        if (_uiState.value.pairing) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(pairing = true, pairError = null)
+            try {
+                performPair(
+                    PairTokenPayload(
+                        pairToken = pairToken.trim(),
+                        serverUrl = serverUrl.trim(),
+                        deviceId = deviceId.trim(),
+                        deviceName = null,
+                    )
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(pairing = false, pairError = "配对失败:${friendly(e)}")
+            }
+        }
+    }
+
+    private suspend fun performPair(payload: PairTokenPayload) {
+        // PairingClient.pair 内部已切 IO;configStore.save 走 EncryptedFile 磁盘 IO,单独切池
+        val response = pairingClient.pair(payload, Build.MODEL)
+        val config = AppConfig(
+            deviceId = payload.deviceId,
+            broker = response.broker,
+            r2 = response.r2,
+            sessionKey = response.sessionKey,
+            expiresAt = response.expiresAt,
+        )
+        withContext(Dispatchers.IO) { configStore.save(config) }
+        withContext(Dispatchers.Main) {
+            _uiState.value = _uiState.value.copy(
+                pairing = false,
+                pairError = null,
+                paired = true,
+                deviceId = config.deviceId,
+            )
+        }
+    }
+
+    /** 把 PairingClient 抛出的 "server returned 400: {"code":..,"message":".."}" 提炼成可读文案。 */
+    private fun friendly(e: Exception): String {
+        val raw = e.message ?: e.javaClass.simpleName
+        val m = Regex("\"message\"\\s*:\\s*\"([^\"]+)\"").find(raw)
+        return m?.groupValues?.get(1) ?: raw
     }
 
     private fun buildCapabilityList(): List<CapabilityItem> {
