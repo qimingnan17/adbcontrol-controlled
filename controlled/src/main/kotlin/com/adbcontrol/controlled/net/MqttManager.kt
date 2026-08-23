@@ -116,6 +116,12 @@ class MqttManager(
 
                 override fun connectionLost(cause: Throwable?) {
                     Log.w(TAG, "connectionLost: ${cause?.message}")
+                    // 认证失败(原因码 4/5):凭证被吊销(如 Web 端删设备/吊销)或过期,
+                    // 自动重连只会反复 401,直接上抛让上层清理本地配对。
+                    if (isAuthFailure(cause)) {
+                        listener?.onAuthFailed()
+                        return
+                    }
                     // automaticReconnect=true,Paho 会自动重连,置 RECONNECTING 而非 DISCONNECTED(避免 UI 误判为永久掉线)
                     _connectionState.value = ConnectionState.RECONNECTING
                     listener?.onDisconnected(cause)
@@ -272,6 +278,11 @@ class MqttManager(
         _connectionState.value = ConnectionState.DISCONNECTED
     }
 
+    /** 是否认证失败:凭证被吊销/过期。原因码 4=REASON_FAILED_AUTHENTICATION,5=REASON_NOT_AUTHORIZED。 */
+    private fun isAuthFailure(cause: Throwable?): Boolean =
+        cause is org.eclipse.paho.client.mqttv3.MqttException &&
+            (cause.reasonCode == 4 || cause.reasonCode == 5)
+
     interface MqttMessageListener {
         fun onCommand(message: WsMessage, command: Command)
         fun onReminder(message: WsMessage)
@@ -281,6 +292,8 @@ class MqttManager(
         fun onControllerOffline(controllerDeviceId: String)
         fun onConnected()
         fun onDisconnected(cause: Throwable?)
+        /** 连接被认证拒绝(凭证吊销/过期):上层应清除本地配对并停 MQTT,避免反复 401 重连。 */
+        fun onAuthFailed() {}
     }
 
     companion object {
