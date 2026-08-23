@@ -250,7 +250,6 @@ class ControlledViewModel @Inject constructor(
             CapabilityItem("无障碍服务", isAccessibilityGranted(), "OPT"),
             CapabilityItem("设备管理", false, "OPT"),
             CapabilityItem("使用情况访问", false, "MUST"),
-            CapabilityItem("通知监听", false, "OPT"),
             CapabilityItem("电池白名单", false, "MUST"),
         )
     }

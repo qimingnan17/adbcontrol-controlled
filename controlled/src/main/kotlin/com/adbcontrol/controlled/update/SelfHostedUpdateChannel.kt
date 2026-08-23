@@ -28,7 +28,7 @@ import java.security.MessageDigest
  * 2. 优先下载差分包(patchUrl),bsdiff 应用 → APK;失败回退全量 APK(fullApkUrl)
  *    GitHub Release 链接走 [GitHubFastDownloader](优选 IP + 加速代理回退)
  * 3. sha256 校验通过
- * 4. Shizuku 可用 → `pm install -r` 静默安装
+ * 4. Shizuku 可用 → `pm install -S` stdin 流式静默安装(绕开私有目录权限)
  *    Shizuku 不可用 → FileProvider + 系统安装确认
  * 5. 安装结果 POST /update/report 上报(便于服务端统计分发情况)
  */
@@ -52,15 +52,15 @@ class SelfHostedUpdateChannel(
     override suspend fun check(): UpdateCheckResponse? = withContext(Dispatchers.IO) {
         val cfg = currentConfig() ?: return@withContext null
         val serverUrl = cfg.serverUrl.trim().trimEnd('/')
-        val query = buildString {
-            append(serverUrl).append("/update/check")
-            append("?deviceId=").append(cfg.deviceId)
-            append("&currentVersionCode=").append(currentVersionCode())
-            append("&currentVersionName=").append(currentVersionName())
-            append("&channel=stable")
-        }
+        val queryUrl = android.net.Uri.parse(serverUrl).buildUpon()
+            .appendPath("update").appendPath("check")
+            .appendQueryParameter("deviceId", cfg.deviceId)
+            .appendQueryParameter("currentVersionCode", currentVersionCode().toString())
+            .appendQueryParameter("currentVersionName", currentVersionName())
+            .appendQueryParameter("channel", "stable")
+            .build().toString()
         runCatching {
-            httpClient.newCall(Request.Builder().url(query).build()).execute().use { resp ->
+            httpClient.newCall(Request.Builder().url(queryUrl).build()).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     Log.w(TAG, "check http ${resp.code}")
                     return@withContext null
@@ -135,19 +135,24 @@ class SelfHostedUpdateChannel(
 
     override suspend fun install(apk: File): UpdateChannel.InstallResult = withContext(Dispatchers.IO) {
         if (shizukuExecutor.isAvailable()) {
-            // Shizuku 静默安装:pm install -r <path>
-            val result = shizukuExecutor.execShell("pm install -r ${apk.absolutePath}", "update-install")
+            // Shizuku 静默安装:pm install -S stdin 流式喂包
+            // 根因修复:旧实现 `pm install -r <path>` 必然失败——
+            // APK 在本应用私有缓存目录(0700,仅自身可读),而 Shizuku 执行
+            // 进程是 shell uid,无权读路径 → Permission denied。
+            // 流式安装由 App 进程读自己的文件并通过 stdin 传给 Shizuku 侧 pm,绕开文件权限。
+            val result = shizukuExecutor.installApkStreamed(apk, "update-install")
             if (result.success) {
-                UpdateChannel.InstallResult(success = true, message = "installed via Shizuku")
+                UpdateChannel.InstallResult(success = true, message = "installed via Shizuku (streamed)")
             } else {
                 UpdateChannel.InstallResult(success = false, message = result.output)
             }
         } else {
-            // 无 Shizuku:FileProvider 共享 APK 拉起系统安装确认
+            // 无 Shizuku:FileProvider 共享 APK 拉起系统安装确认(需用户手动确认,非静默)
             val prompted = promptUserInstall(apk)
             UpdateChannel.InstallResult(
                 success = false,
-                message = if (prompted) "prompted user install (no Shizuku)" else "no installer available",
+                message = if (prompted) "已拉起系统安装器,请在手机通知栏/界面确认安装(需一次人工授权)"
+                    else "无安装器可用,请开启 Shizuku 以支持静默安装",
             )
         }
     }

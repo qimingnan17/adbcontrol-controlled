@@ -41,7 +41,7 @@ class ControlledAccessibilityService : AccessibilityService() {
                 telemetryEngine.reportActivity(pkg, ActivityEvent.APP_FOREGROUND)
             }
             AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> {
-                // 通知事件可作为 NotificationListener 的冗余补充
+                // 忽略通知事件
             }
         }
     }
