@@ -62,6 +62,10 @@ class ControlledViewModel @Inject constructor(
         val shortcutMsg: String? = null,
         /** 快捷方式切换进行中 */
         val shortcutBusy: Boolean = false,
+        /** 一键开启无障碍结果提示(null=无) */
+        val a11yMsg: String? = null,
+        /** 一键开启无障碍进行中 */
+        val a11yBusy: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -112,6 +116,55 @@ class ControlledViewModel @Inject constructor(
                     shortcutMsg = err ?: (if (enable) "已开启" else "已关闭"),
                 )
             }
+        }
+    }
+
+    /**
+     * 一键开启无障碍服务(绕过国产 ROM 只有快捷方式的界面)。
+     * 优先 Shizuku 直接写 secure 设置;Shizuku 不可用时回退跳系统无障碍设置页。
+     */
+    fun forceEnableAccessibility() {
+        if (_uiState.value.a11yBusy) return
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) { _uiState.value = _uiState.value.copy(a11yBusy = true, a11yMsg = null) }
+            val component = android.content.ComponentName(
+                appContext, com.adbcontrol.controlled.accessibility.ControlledAccessibilityService::class.java
+            ).flattenToString()
+
+            if (shizukuExecutor.isAvailable()) {
+                // Shizuku 直写:enabled_accessibility_services 用冒号分隔的 flatten component 列表
+                val ok1 = runCatching {
+                    shizukuExecutor.execShell("settings put secure enabled_accessibility_services $component", "a11y-enable")
+                }.getOrNull()?.success == true
+                val ok2 = runCatching {
+                    shizukuExecutor.execShell("settings put secure accessibility_enabled 1", "a11y-enable")
+                }.getOrNull()?.success == true
+                val granted = isAccessibilityGranted()
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        a11yBusy = false,
+                        a11yMsg = when {
+                            granted -> "无障碍已开启"
+                            ok1 && ok2 -> "已写入设置，稍等系统生效"
+                            else -> "写入失败：请确认 Shizuku 已授权后重试"
+                        },
+                    )
+                }
+            } else {
+                // 无 Shizuku:回退系统设置页(兼容 MIUI 深链)
+                val deepLink = android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                    putExtra("android.intent.extra.COMPONENT_NAME", component)
+                }
+                withContext(Dispatchers.Main) {
+                    runCatching { appContext.startActivity(deepLink.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                        .onFailure { runCatching { appContext.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) } }
+                    _uiState.value = _uiState.value.copy(
+                        a11yBusy = false,
+                        a11yMsg = "已跳转设置，请在“已安装的服务”中打开开关",
+                    )
+                }
+            }
+            refresh()
         }
     }
 

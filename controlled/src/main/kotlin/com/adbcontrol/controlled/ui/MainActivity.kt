@@ -41,6 +41,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -141,7 +143,8 @@ private fun SetupScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
@@ -170,7 +173,11 @@ private fun SetupScreen(
             )
         }
 
-        CapabilityChecklist(uiState.capabilities)
+        CapabilityChecklist(
+            caps = uiState.capabilities,
+            a11yMsg = uiState.a11yMsg,
+            onEnableAccessibility = viewModel::forceEnableAccessibility,
+        )
 
         // OTA 更新卡片:当前版本 + 流程状态 + 手动检查
         val updateState by viewModel.updateState.collectAsState()
@@ -313,7 +320,11 @@ private fun ManualPairDialog(
 private const val DEFAULT_SERVER_URL = "https://adbcontrol-backend.fly.dev"
 
 @Composable
-private fun CapabilityChecklist(caps: List<CapabilityItem>) {
+private fun CapabilityChecklist(
+    caps: List<CapabilityItem>,
+    a11yMsg: String?,
+    onEnableAccessibility: () -> Unit,
+) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
 
@@ -327,8 +338,14 @@ private fun CapabilityChecklist(caps: List<CapabilityItem>) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // 叠加系统级真实检测(无障碍/设备管理/使用情况/通知监听/电池白名单),并挂接跳转动作
-    val items = remember(caps, tick) { caps.map { it.resolved(ctx) } }
+    // 叠加系统级真实检测(无障碍/设备管理/使用情况/通知监听/电池白名单),并挂接跳转动作;
+    // 无障碍服务的动作覆盖为"一键开启"(Shizuku 直写设置,绕开只有快捷方式的界面)
+    val items = remember(caps, tick) {
+        caps.map { it.resolved(ctx) }.map { item ->
+            if (item.label == "无障碍服务") item.copy(action = { onEnableAccessibility() })
+            else item
+        }
+    }
 
     GlassCard {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -340,6 +357,15 @@ private fun CapabilityChecklist(caps: List<CapabilityItem>) {
             Spacer(modifier = Modifier.height(12.dp))
             items.forEach { item ->
                 CapabilityRow(item)
+                if (item.label == "无障碍服务") {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = (a11yMsg ?: "在“已安装的服务”列表里打开本应用的无障碍开关（不是快捷方式）"),
+                        color = AppColors.slate,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
                 Spacer(modifier = Modifier.height(8.dp))
             }
         }
@@ -395,8 +421,18 @@ private fun CapabilityItem.resolved(ctx: android.content.Context): CapabilityIte
                 )
             }
         }
-        "无障碍服务" -> { c ->
-            runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+"无障碍服务" -> { c ->
+            // 深链定位到本服务详情页:部分 ROM 支持通过 extra 直接跳到目标服务的无障碍开关页
+            val deepLink = android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                putExtra(
+                    "android.intent.extra.COMPONENT_NAME",
+                    android.content.ComponentName(
+                        c, com.adbcontrol.controlled.accessibility.ControlledAccessibilityService::class.java
+                    ).flattenToString(),
+                )
+            }
+runCatching { c.startActivity(deepLink) }
+                .onFailure { runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }
         }
         "设备管理" -> { c ->
             runCatching {

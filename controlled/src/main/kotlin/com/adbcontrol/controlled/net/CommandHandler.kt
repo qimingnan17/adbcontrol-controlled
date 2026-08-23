@@ -262,6 +262,14 @@ class CommandHandler(
         Log.w(TAG, "mqtt disconnected: ${cause?.message}")
     }
 
+    override fun onAuthFailed() {
+        // 连接被认证拒绝:本地凭证已被后端吊销(如 Web 端删除设备/吊销令牌)或已过期。
+        // 自动重连只会反复 401,直接清除本地配对并断开 MQTT(释放保活锁),回到未配对态。
+        Log.w(TAG, "mqtt auth failed (credentials revoked/expired), clearing pairing")
+        runCatching { configStore.clear() }
+        runCatching { mqttManager.stop() }
+    }
+
     companion object {
         private const val TAG = "CommandHandler"
     }
