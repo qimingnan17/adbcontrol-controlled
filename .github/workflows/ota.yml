@@ -1,7 +1,9 @@
 # OTA 自动发布流水线。
 #
-# 触发:推送 v* 形式的 tag(如 v1.0.1)。
-# 流程:构建 debug 签名 APK(versionCode=提交计数,versionName=tag)
+# 触发:
+#   推 tag v* → 命名 Release(如 v1.0.1),版本号 = tag 名。
+#   推 main   → 滚动 Nightly Release(tag=nightly,覆盖前一个),版本号 = nightly-{短sha}。
+# 流程:构建 debug 签名 APK(versionCode=提交计数,单调递增)
 #      → 计算 sha256 → 上传到 GitHub Release
 #      → POST {后端}/api/updates/publish 注册版本清单并广播 update_available。
 #
@@ -14,6 +16,7 @@ name: OTA Release
 on:
   push:
     tags: ['v*']
+    branches: [main]
 
 permissions:
   contents: write
@@ -25,7 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # rev-list 计数需要完整历史
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -39,13 +42,22 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
-          VERSION_NAME="${GITHUB_REF_NAME#v}"
           VERSION_CODE="$(git rev-list --count HEAD)"
-          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION_NAME="${GITHUB_REF_NAME#v}"
+            echo "release_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "release_name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            SHORT_SHA="${GITHUB_SHA::7}"
+            VERSION_NAME="nightly-${SHORT_SHA}"
+            echo "release_tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "release_name=Nightly build (${SHORT_SHA})" >> "$GITHUB_OUTPUT"
+          fi
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "Building v$VERSION_NAME (code=$VERSION_CODE)"
 
-      - name: Build debug APK (debug signing for OTA sideload)
+      - name: Build debug APK
         run: >
           ./gradlew :controlled:assembleDebug --no-daemon
           -PversionCode=${{ steps.ver.outputs.version_code }}
@@ -62,28 +74,41 @@ jobs:
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA size=$SIZE"
 
+      - name: Remove previous nightly release (main branch only)
+        if: github.ref_type != 'tag'
+        run: |
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: ${{ steps.ver.outputs.release_tag }}
+          name: ${{ steps.ver.outputs.release_name }}
+          generate_release_notes: ${{ github.ref_type == 'tag' }}
+          prerelease: ${{ github.ref_type != 'tag' }}
           files: controlled/build/outputs/apk/debug/controlled-debug.apk
 
       - name: Publish manifest to backend
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          URL="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}/controlled-debug.apk"
+          VN="${{ steps.ver.outputs.version_name }}"
+          TAG="${{ steps.ver.outputs.release_tag }}"
+          URL="${{ github.server_url }}/${{ github.repository }}/releases/download/${TAG}/controlled-debug.apk"
+          NOTES="Commit ${{ github.sha }}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            NOTES="Release ${{ github.ref_name }}"
+          fi
           BODY=$(cat <<EOF
           {
             "versionCode": ${{ steps.ver.outputs.version_code }},
-            "versionName": "${TAG}",
+            "versionName": "${VN}",
             "channel": "stable",
             "priority": "NORMAL",
             "fullApkUrl": "${URL}",
             "sha256": "${{ steps.hash.outputs.sha256 }}",
             "sizeBytes": ${{ steps.hash.outputs.size }},
-            "releaseNotes": "Release ${{ github.ref_name }}"
+            "releaseNotes": "${NOTES}"
           }
           EOF
           )
