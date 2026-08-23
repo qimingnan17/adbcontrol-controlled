@@ -66,7 +66,13 @@ object AppModule {
         json: Json,
         appTimeController: AppTimeController,
         notificationCenter: ReminderNotificationCenter,
-    ): CommandHandler = CommandHandler(dispatcher, mqttManager, json, appTimeController, notificationCenter)
+        configStore: ConfigStore,
+        shizukuExecutor: ShizukuExecutor,
+        accessibilityExecutor: com.adbcontrol.controlled.executor.AccessibilityExecutor,
+    ): CommandHandler = CommandHandler(
+        dispatcher, mqttManager, json, appTimeController, notificationCenter,
+        configStore, shizukuExecutor, accessibilityExecutor,
+    )
 
     // ---------- 遥测 ----------
 
@@ -100,7 +106,8 @@ object AppModule {
         @ApplicationContext context: Context,
         mqttManager: MqttManager,
         json: Json,
-    ): UsageReporter = UsageReporter(context, mqttManager, json)
+        configStore: ConfigStore,
+    ): UsageReporter = UsageReporter(context, mqttManager, json, configStore)
 
     @Provides @Singleton
     fun provideHealthReporter(

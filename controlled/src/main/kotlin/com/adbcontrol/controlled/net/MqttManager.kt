@@ -41,6 +41,31 @@ class MqttManager(
     private var client: MqttAsyncClient? = null
     private var config: AppConfig? = null
 
+    /**
+     * 息屏保活锁:手机长时间息屏时,国产 ROM/Doze 会挂起 CPU 导致 Paho keepalive
+     * 心跳发不出去而被 broker 判死。连接期间持有 partial WakeLock(CPU 亮、屏幕灭),
+     * 配合前台服务把断联概率压到最低。带超时上限防异常路径泄漏,重连成功时续期。
+     */
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
+
+    private fun acquireKeepAliveLock() {
+        runCatching {
+            val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            if (wakeLock == null) {
+                wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG).apply {
+                    setReferenceCounted(false)
+                }
+            }
+            wakeLock?.takeIf { !it.isHeld }?.acquire(WAKELOCK_TIMEOUT_MS)
+        }.onFailure { Log.w(TAG, "acquire wake lock failed", it) }
+    }
+
+    private fun releaseKeepAliveLock() {
+        runCatching {
+            wakeLock?.takeIf { it.isHeld }?.release()
+        }
+    }
+
     /** 当前设备 ID(配对后可用)。 */
     fun currentDeviceId(): String? = config?.deviceId
 
@@ -80,6 +105,8 @@ class MqttManager(
             mqttClient.setCallback(object : MqttCallbackExtended {
                 override fun connectComplete(reconnect: Boolean, serverURI: String?) {
                     Log.i(TAG, "connectComplete reconnect=$reconnect uri=$serverURI")
+                    // 连接建立(含自动重连)即持有息屏保活锁;重连成功相当于续期
+                    acquireKeepAliveLock()
                     // 订阅成功后才置 CONNECTED;订阅前用 RECONNECTING/CONNECTING 占位
                     if (reconnect) _connectionState.value = ConnectionState.RECONNECTING
                     subscribeTopics(mqttClient, config.deviceId)
@@ -236,6 +263,7 @@ class MqttManager(
 
     /** 停止并断开。 */
     fun stop() {
+        releaseKeepAliveLock()
         runCatching {
             client?.disconnectForcibly()
             client?.close()
@@ -257,5 +285,9 @@ class MqttManager(
 
     companion object {
         private const val TAG = "MqttManager"
+        private const val WAKELOCK_TAG = "adbcontrol:mqtt_keepalive"
+
+        /** 保活锁单次持有时限:6 小时,connectComplete(重连)时会重新 acquire 续期。 */
+        private const val WAKELOCK_TIMEOUT_MS = 6L * 60 * 60 * 1000
     }
 }

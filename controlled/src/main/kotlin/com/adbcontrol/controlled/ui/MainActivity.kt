@@ -172,6 +172,16 @@ private fun SetupScreen(
 
         CapabilityChecklist(uiState.capabilities)
 
+        // 无障碍已授予时展示系统快捷方式开关(音量键长按 / 悬浮按钮入口)
+        uiState.shortcutEnabled?.let { shortcutEnabled ->
+            AccessibilityShortcutCard(
+                enabled = shortcutEnabled,
+                busy = uiState.shortcutBusy,
+                msg = uiState.shortcutMsg,
+                onToggle = viewModel::toggleAccessibilityShortcut,
+            )
+        }
+
         OemKeepAliveCard()
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -455,6 +465,47 @@ private fun OemKeepAliveCard() {
                 Button(onClick = { OemBatterySettings.openMiuiGodMode(ctx) }) {
                     Text("MIUI 神隐模式 / 应用锁")
                 }
+            }
+        }
+    }
+}
+
+/** 系统无障碍快捷方式开关卡(授予无障碍后出现;写入依赖 WRITE_SECURE_SETTINGS 或 Shizuku)。 */
+@Composable
+private fun AccessibilityShortcutCard(
+    enabled: Boolean,
+    busy: Boolean,
+    msg: String?,
+    onToggle: (Boolean) -> Unit,
+) {
+    GlassCard {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(
+                        text = "无障碍快捷方式",
+                        color = AppColors.textPrimary,
+                        fontSize = 14.sp,
+                    )
+                    Text(
+                        text = "控制音量键长按 / 悬浮按钮是否唤起本应用的无障碍服务",
+                        color = AppColors.textSecondary,
+                        fontSize = 11.sp,
+                    )
+                }
+                androidx.compose.material3.Switch(
+                    checked = enabled,
+                    enabled = !busy,
+                    onCheckedChange = { onToggle(it) },
+                )
+            }
+            msg?.let {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(text = it, color = AppColors.textSecondary, fontSize = 11.sp)
             }
         }
     }

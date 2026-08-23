@@ -119,10 +119,10 @@ class AccessibilityExecutor @Inject constructor() : CommandExecutor {
 
     /** README 7:AccessibilityService.takeScreenshot (API 30+)。返回压缩后 PNG 字节数据。 */
     @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
-    private suspend fun takeScreenshot(commandId: String, started: Long): ExecutionResult =
+    suspend fun captureScreenPng(): ByteArray? =
         suspendCancellableCoroutine { cont ->
             val service = AccessibilityServiceBridge.get() ?: run {
-                cont.resume(fail(commandId, "service null", System.currentTimeMillis() - started))
+                cont.resume(null)
                 return@suspendCancellableCoroutine
             }
             val callback = object : AccessibilityService.TakeScreenshotCallback {
@@ -130,7 +130,6 @@ class AccessibilityExecutor @Inject constructor() : CommandExecutor {
                     // 协程已取消/已 resume 时直接退出,避免 IllegalStateException(Already resumed)
                     if (!cont.isActive) return
                     runCatching {
-                        val duration = System.currentTimeMillis() - started
                         var bitmap: Bitmap? = null
                         var soft: Bitmap? = null
                         try {
@@ -145,11 +144,10 @@ class AccessibilityExecutor @Inject constructor() : CommandExecutor {
                                 soft!!.compress(Bitmap.CompressFormat.PNG, 100, baos)
                                 baos.toByteArray()
                             } else null
-                            if (png != null) {
-                                // 大图走 R2 旁路,这里返回大小供上层上传;实际 URL 拼装在 dispatcher
-                                cont.resume(ok(commandId, "screenshot bytes=${png.size}", duration))
-                            } else {
-                                cont.resume(fail(commandId, "bitmap conversion failed", duration))
+                            if (png != null && cont.isActive) {
+                                cont.resume(png)
+                            } else if (cont.isActive) {
+                                cont.resume(null)
                             }
                         } finally {
                             runCatching { soft?.recycle() }
@@ -159,20 +157,31 @@ class AccessibilityExecutor @Inject constructor() : CommandExecutor {
                     }.onFailure { t ->
                         // runCatching 内未 resume 兜底,避免协程悬挂
                         if (cont.isActive) {
-                            cont.resume(fail(commandId, "onSuccess exception=${t.message}", System.currentTimeMillis() - started))
+                            cont.resume(null)
                         }
                     }
                 }
 
                 override fun onFailure(errorCode: Int) {
                     if (!cont.isActive) return
-                    runCatching {
-                        cont.resume(fail(commandId, "takeScreenshot failed code=$errorCode", System.currentTimeMillis() - started))
-                    }
+                    Log.w(TAG, "takeScreenshot failed code=$errorCode")
+                    runCatching { cont.resume(null) }
                 }
             }
             service.takeScreenshot(android.view.Display.DEFAULT_DISPLAY, screenshotExecutor, callback)
         }
+
+    /** README 7:AccessibilityService.takeScreenshot (API 30+)。返回压缩后 PNG 字节数据。 */
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
+    private suspend fun takeScreenshot(commandId: String, started: Long): ExecutionResult {
+        val png = captureScreenPng()
+        val duration = System.currentTimeMillis() - started
+        return if (png != null) {
+            ok(commandId, "screenshot bytes=${png.size}", duration)
+        } else {
+            fail(commandId, "bitmap conversion failed / service null", duration)
+        }
+    }
 
     companion object {
         private const val TAG = "AccessibilityExecutor"
