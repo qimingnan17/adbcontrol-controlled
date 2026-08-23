@@ -15,6 +15,7 @@ import com.adbcontrol.controlled.executor.ShizukuExecutor
 import com.adbcontrol.controlled.storage.R2StorageClient
 import com.adbcontrol.controlled.apptime.AppTimeController
 import com.adbcontrol.controlled.notification.ReminderNotificationCenter
+import com.adbcontrol.controlled.update.UpdateRunner
 import com.adbcontrol.shared.model.CommandCategory
 import com.adbcontrol.shared.model.ReminderPayload
 import kotlinx.coroutines.CoroutineScope
@@ -44,6 +45,7 @@ class CommandHandler(
     private val configStore: ConfigStore,
     private val shizukuExecutor: ShizukuExecutor,
     private val accessibilityExecutor: AccessibilityExecutor,
+    private val updateRunner: UpdateRunner,
 ) : MqttManager.MqttMessageListener {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -238,7 +240,14 @@ class CommandHandler(
 
     override fun onUpdateNotify(message: WsMessage) {
         Log.i(TAG, "update notify received: ${message.id}")
-        // 触发更新检查(由 ControlledService 桥接到 UpdateChannel)
+        // 后端发布新版本时经 push/{deviceId} 广播 {"event":"update_available",...},
+        // 触发一次完整的 检查→下载→静默安装→上报 流程(UpdateRunner 内部防重入)
+        val event = runCatching {
+            json.decodeFromString(JsonObject.serializer(), message.payload)
+        }.getOrNull()?.get("event")?.toString()?.trim('"')
+        if (event == "update_available") {
+            updateRunner.trigger("push")
+        }
     }
 
     override fun onControllerOffline(controllerDeviceId: String) {

@@ -49,6 +49,9 @@
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:ignore="QueryAllPackagesPermission" />
 
+    <!-- OTA:无 Shizuku 时经系统安装器安装更新 APK(Android 8+ 必需声明) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:name=".ControlledApp"
         android:allowBackup="false"
@@ -147,6 +150,17 @@
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- OTA:无 Shizuku 时经 FileProvider 把 cache/updates 下的 APK 共享给系统安装器 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- 禁用 WorkManager 默认初始化,改用 ControlledApp(Configuration.Provider)+ HiltWorkerFactory -->
         <provider

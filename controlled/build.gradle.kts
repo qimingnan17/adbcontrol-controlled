@@ -15,8 +15,11 @@ android {
         applicationId = "com.adbcontrol.controlled"
         minSdk = 31
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+
+        // 版本可由 CI 参数覆盖:./gradlew assembleDebug -PversionCode=42 -PversionName=1.4.2
+        // (OTA workflow 用 git rev-list 计数作 versionCode,tag 名作 versionName)
+        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
+        versionName = (project.findProperty("versionName") as String?) ?: "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

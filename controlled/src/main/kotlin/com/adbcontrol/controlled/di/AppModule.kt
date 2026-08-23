@@ -69,9 +69,10 @@ object AppModule {
         configStore: ConfigStore,
         shizukuExecutor: ShizukuExecutor,
         accessibilityExecutor: com.adbcontrol.controlled.executor.AccessibilityExecutor,
+        updateRunner: com.adbcontrol.controlled.update.UpdateRunner,
     ): CommandHandler = CommandHandler(
         dispatcher, mqttManager, json, appTimeController, notificationCenter,
-        configStore, shizukuExecutor, accessibilityExecutor,
+        configStore, shizukuExecutor, accessibilityExecutor, updateRunner,
     )
 
     // ---------- 遥测 ----------
@@ -156,6 +157,7 @@ object AppModule {
 
     /**
      * 自建更新通道(默认实现)。Play 通道需要 Activity,仅在 UI 可用时构造,不在此默认提供。
+     * 返回具体类型供 UpdateRunner 直接依赖(report() 为自建通道特有)。
      */
     @Provides @Singleton
     fun provideSelfHostedUpdateChannel(
@@ -163,7 +165,18 @@ object AppModule {
         httpClient: OkHttpClient,
         json: Json,
         shizukuExecutor: ShizukuExecutor,
-    ): UpdateChannel = SelfHostedUpdateChannel(context, httpClient, json, shizukuExecutor)
+        configStore: ConfigStore,
+        githubDownloader: com.adbcontrol.controlled.update.GitHubFastDownloader,
+    ): com.adbcontrol.controlled.update.SelfHostedUpdateChannel = SelfHostedUpdateChannel(
+        context, httpClient, json, shizukuExecutor, configStore, githubDownloader
+    )
+
+    @Provides @Singleton
+    fun provideUpdateRunner(
+        @ApplicationContext context: Context,
+        channel: com.adbcontrol.controlled.update.SelfHostedUpdateChannel,
+    ): com.adbcontrol.controlled.update.UpdateRunner =
+        com.adbcontrol.controlled.update.UpdateRunner(context, channel)
 
     private fun appVersionName(context: Context): String =
         com.adbcontrol.controlled.ControlledApp.appVersionName(context)
