@@ -16,7 +16,6 @@ data class CapabilitySnapshot(
     val accessibility: Boolean,
     val deviceAdmin: Boolean,
     val usageStats: Boolean,
-    val notificationListener: Boolean,
     val batteryWhitelist: Boolean,
 )
 
@@ -62,7 +61,6 @@ class CommandDispatcher @Inject constructor(
     /** 收集当前能力快照(供 [com.adbcontrol.controlled.telemetry.HealthReporter] 上报)。 */
     fun snapshot(
         usageStats: Boolean,
-        notificationListener: Boolean,
         batteryWhitelist: Boolean,
     ): CapabilitySnapshot = CapabilitySnapshot(
         shizuku = shizukuExecutor.state().name,
@@ -70,7 +68,6 @@ class CommandDispatcher @Inject constructor(
         accessibility = accessibilityExecutor.isAvailable(),
         deviceAdmin = deviceAdminExecutor.isAvailable(),
         usageStats = usageStats,
-        notificationListener = notificationListener,
         batteryWhitelist = batteryWhitelist,
     )
 

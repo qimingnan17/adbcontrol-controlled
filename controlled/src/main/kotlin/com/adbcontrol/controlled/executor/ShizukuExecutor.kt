@@ -170,6 +170,68 @@ class ShizukuExecutor @Inject constructor(
     suspend fun execShell(shellLine: String, commandId: String = "shell"): ExecutionResult =
         runShell(arrayOf("sh", "-c", shellLine), commandId, System.currentTimeMillis())
 
+    /**
+     * OTA 静默安装:通过 stdin 流式喂包解决文件路径权限问题。
+     *
+     * 旧实现 `pm install -r <apk路径>` 必然失败:APK 在本应用私有缓存目录
+     * (/data/user/0/<pkg>/cache,权限 0700 仅自身可读),而 Shizuku 执行的进程是
+     * shell uid,无权读取该路径 → 必然 Permission denied。
+     *
+     * 修复:用 `pm install -S <size>` 从 stdin 读 APK 字节流,由本 App 进程
+     * (对自己的缓存目录有读权限)把字节写入远程进程 stdin(ParcelFileDescriptor),
+     * 写完关闭 stdin 发 EOF。绕开 filesystem 权限,不走任何中间路径。
+     *
+     * 86MB debug APK 传输+校验可能耗时,超时放宽到 180s。
+     */
+    suspend fun installApkStreamed(apkFile: java.io.File, commandId: String = "ota-install"): ExecutionResult =
+        runCatching {
+            val started = System.currentTimeMillis()
+            val binder = Shizuku.getBinder() ?: error("Shizuku binder null")
+            val service = IShizukuService.Stub.asInterface(binder)
+            val size = apkFile.length()
+            val process = service.newProcess(arrayOf("pm", "install", "-r", "-S", size.toString()), null, null)
+            val stdinPfd: ParcelFileDescriptor? = runCatching { process.outputStream }.getOrNull()
+            val outPfd: ParcelFileDescriptor? = runCatching { process.inputStream }.getOrNull()
+            val errPfd: ParcelFileDescriptor? = runCatching { process.errorStream }.getOrNull()
+            try {
+                coroutineScope {
+                    val write = async(Dispatchers.IO) {
+                        // 本进程读自己的文件,写远程进程 stdin;写完必须关掉 stdin 让 pm 收到 EOF
+                        runCatching {
+                            apkFile.inputStream().use { ins ->
+                                java.io.FileOutputStream(stdinPfd!!.fileDescriptor).use { outs ->
+                                    ins.copyTo(outs)
+                                }
+                            }
+                        }
+                    }
+                    val out = async(Dispatchers.IO) { readPfd(outPfd) }
+                    val err = async(Dispatchers.IO) { readPfd(errPfd) }
+                    val code = async(Dispatchers.IO) { process.waitFor() }
+                    withTimeoutOrNull(180_000L) {
+                        write.await()
+                        runCatching { stdinPfd?.close() } // EOF → pm 开始真正安装
+                        val outV = out.await()
+                        val errV = err.await()
+                        val codeV = code.await()
+                        val duration = System.currentTimeMillis() - started
+                        if (codeV == 0) ok(commandId, "installed size=$size ${outV.trim()}", duration)
+                        else fail(commandId, "exit=$codeV stderr=${errV.trim()}", duration)
+                    } ?: run {
+                        runCatching { process.destroy() }
+                        fail(commandId, "install timeout(180s)", System.currentTimeMillis() - started)
+                    }
+                }
+            } finally {
+                runCatching { stdinPfd?.close() }
+                runCatching { outPfd?.close() }
+                runCatching { errPfd?.close() }
+                runCatching { process.destroy() }
+            }
+        }.getOrElse {
+            fail(commandId, "exception=${it.message}", 0L)
+        }
+
     private suspend fun runShell(cmd: Array<String>, commandId: String, started: Long): ExecutionResult {
         return runCatching {
             val binder = Shizuku.getBinder() ?: error("Shizuku binder null")

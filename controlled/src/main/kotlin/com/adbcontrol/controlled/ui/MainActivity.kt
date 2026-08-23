@@ -395,12 +395,6 @@ private fun CapabilityItem.resolved(ctx: android.content.Context): CapabilityIte
                 android.os.Process.myUid(), ctx.packageName,
             ) == android.app.AppOpsManager.MODE_ALLOWED
         }
-        "通知监听" -> {
-            val enabled = android.provider.Settings.Secure.getString(
-                ctx.contentResolver, "enabled_notification_listeners"
-            ).orEmpty()
-            enabled.contains(ctx.packageName)
-        }
         "电池白名单" -> {
             val pm = ctx.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
             pm.isIgnoringBatteryOptimizations(ctx.packageName)
@@ -452,9 +446,6 @@ runCatching { c.startActivity(deepLink) }
         }
         "使用情况访问" -> { c ->
             runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
-        }
-        "通知监听" -> { c ->
-            runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
         }
         "电池白名单" -> { c ->
             runCatching {

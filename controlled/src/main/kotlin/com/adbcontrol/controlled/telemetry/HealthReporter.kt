@@ -1,10 +1,8 @@
 package com.adbcontrol.controlled.telemetry
 
-import android.app.NotificationManager
 import android.content.Context
 import android.os.PowerManager
 import android.provider.Settings
-import android.service.notification.NotificationListenerService
 import com.adbcontrol.controlled.executor.CommandDispatcher
 import com.adbcontrol.controlled.net.MqttManager
 import com.adbcontrol.shared.MessageType
@@ -33,7 +31,6 @@ class HealthReporter(
     fun reportOnce(deviceId: String): Boolean {
         val cap = dispatcher.snapshot(
             usageStats = collector.hasUsageStatsPermission(),
-            notificationListener = isNotificationListenerEnabled(),
             batteryWhitelist = isBatteryWhitelisted(),
         )
 
@@ -46,7 +43,6 @@ class HealthReporter(
             accessibility = cap.accessibility,
             deviceAdmin = cap.deviceAdmin,
             usageStats = cap.usageStats,
-            notificationListener = cap.notificationListener,
             batteryWhitelist = cap.batteryWhitelist,
             androidVersion = collector.androidVersion,
             appVersion = appVersion,
@@ -61,15 +57,6 @@ class HealthReporter(
     private fun parseShizuku(state: String): ShizukuState = runCatching {
         ShizukuState.valueOf(state)
     }.getOrDefault(ShizukuState.UNSUPPORTED)
-
-    private fun isNotificationListenerEnabled(): Boolean = runCatching {
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val flat = Settings.Secure.getString(
-            context.contentResolver, "enabled_notification_listeners"
-        ) ?: return@runCatching false
-        val cn = android.content.ComponentName(context, "com.adbcontrol.controlled.notification.ControlledNotificationListenerService")
-        flat.split(":").any { android.content.ComponentName.unflattenFromString(it) == cn }
-    }.getOrDefault(false)
 
     private fun isBatteryWhitelisted(): Boolean = runCatching {
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager

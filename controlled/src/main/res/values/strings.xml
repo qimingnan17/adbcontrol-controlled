@@ -17,7 +17,6 @@
     <string name="accessibility_service_label">AdbControl 无障碍服务</string>
     <string name="accessibility_service_desc">监听窗口切换、模拟手势、截屏、屏蔽指定 UI 控件</string>
     <string name="device_admin_label">AdbControl 设备管理</string>
-    <string name="notification_listener_label">AdbControl 通知监听</string>
 
     <!-- 配对 / 权限自检 UI -->
     <string name="pair_title">设备配对</string>
@@ -34,7 +33,6 @@
     <string name="cap_accessibility">无障碍服务</string>
     <string name="cap_device_admin">设备管理</string>
     <string name="cap_usage_stats">使用情况访问</string>
-    <string name="cap_notification_listener">通知监听</string>
     <string name="cap_battery_whitelist">电池白名单</string>
     <string name="cap_location">定位权限</string>
     <string name="cap_post_notifications">通知权限</string>

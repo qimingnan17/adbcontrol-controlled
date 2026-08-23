@@ -104,9 +104,9 @@ class TelemetryEngine(
         return Pair(TimeUnit.MINUTES.toMillis(delayMinutes), minutesOfDay)
     }
 
-    /** 由 AccessibilityService/NotificationListener 调用,即时上报窗口/通知事件。 */
+    /** 由 AccessibilityService 调用,即时上报窗口切换事件。 */
     fun reportActivity(pkg: String, event: com.adbcontrol.shared.model.ActivityReport.ActivityEvent) {
-        // Bug 7:ControlledService 启动前(或未配对),NotificationListener/AccessibilityService 会先于服务被系统
+        // Bug 7:ControlledService 启动前(或未配对),AccessibilityService 会先于服务被系统
         // 自动连接并调用本方法,此时 deviceId 为默认空串 "",publish 到 topic "activity/" 会被 EMQX 拒绝
         // 或入库 deviceId="" 的脏数据。空 deviceId 全部 return。
         if (deviceId.isEmpty()) return
