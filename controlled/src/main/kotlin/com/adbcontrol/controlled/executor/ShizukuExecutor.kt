@@ -111,17 +111,60 @@ class ShizukuExecutor @Inject constructor(
         }
         val started = System.currentTimeMillis()
 
-        // 截屏单独处理:Shizuku 直接调 screencap 写文件
+        // 截屏单独处理:screencap -p 直接把 PNG 写到 stdout,捕获字节流
+        // (旧实现落盘 /sdcard 再读,受 scoped storage 限制且文件残留)
         if (command.category == com.adbcontrol.shared.model.CommandCategory.APP &&
             command.action == "screencap"
         ) {
-            return runShell(arrayOf("sh", "-c", "screencap -p /sdcard/adbcontrol_screen.png"), commandId, started)
+            val png = captureScreenBytes()
+            val duration = System.currentTimeMillis() - started
+            return if (png != null) ok(commandId, "screenshot bytes=${png.size}", duration)
+            else fail(commandId, "screencap failed", duration)
         }
 
         val shell = CommandShellBuilder.build(command)
             ?: return noPath(commandId)
         return runShell(arrayOf("sh", "-c", shell), commandId, started)
     }
+
+    /**
+     * 截屏并返回 PNG 字节(`screencap -p` 输出到 stdout)。
+     * 返回 null 表示失败(无 binder / 超时 / 空输出)。供 CommandHandler 截图链路调用。
+     */
+    suspend fun captureScreenBytes(timeoutMs: Long = 12_000L): ByteArray? =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val binder = Shizuku.getBinder() ?: return@runCatching null
+                val service = IShizukuService.Stub.asInterface(binder)
+                val process = service.newProcess(arrayOf("screencap", "-p"), null, null)
+                val outPfd: ParcelFileDescriptor? = runCatching { process.inputStream }.getOrNull()
+                try {
+                    val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+                    try {
+                        val readFuture = pool.submit<kotlin.Pair<ByteArray, Int>> {
+                            val bytes = FileInputStream(outPfd!!.fileDescriptor).use { ins ->
+                                ins.readBytes()
+                            }
+                            kotlin.Pair(bytes, process.waitFor())
+                        }
+                        val (bytes, code) = withTimeoutOrNull(timeoutMs) { readFuture.get() }
+                            ?: run {
+                                runCatching { process.destroy() }
+                                return@runCatching null
+                            }
+                        if (code != 0 || bytes.isEmpty()) null else bytes
+                    } finally {
+                        pool.shutdownNow()
+                    }
+                } finally {
+                    runCatching { outPfd?.close() }
+                    runCatching { process.destroy() }
+                }
+            }.getOrElse {
+                Log.e(TAG, "captureScreenBytes failed", it)
+                null
+            }
+        }
 
     /** 执行任意 shell,公开供 [com.adbcontrol.controlled.update.SelfHostedUpdateChannel] 静默安装用。 */
     suspend fun execShell(shellLine: String, commandId: String = "shell"): ExecutionResult =

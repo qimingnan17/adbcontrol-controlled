@@ -60,9 +60,6 @@ class ControlledService : LifecycleService() {
     /** agent 是否已用有效配置启动过;配对完成后由 onStartCommand 重载触发。 */
     @Volatile private var agentStarted = false
 
-    /** agent 是否已用有效配置启动过;配对完成后由 onStartCommand 重载触发。 */
-    @Volatile private var agentStarted = false
-
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "onCreate")

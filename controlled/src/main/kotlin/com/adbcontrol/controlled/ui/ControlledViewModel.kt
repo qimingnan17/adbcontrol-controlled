@@ -1,8 +1,10 @@
 package com.adbcontrol.controlled.ui
 
+import android.content.Context
 import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.adbcontrol.controlled.accessibility.AccessibilityShortcutController
 import com.adbcontrol.controlled.config.ConfigStore
 import com.adbcontrol.controlled.config.PairingClient
 import com.adbcontrol.controlled.config.PairingScanner
@@ -12,6 +14,7 @@ import com.adbcontrol.controlled.executor.ShizukuExecutor
 import com.adbcontrol.shared.model.AppConfig
 import com.adbcontrol.shared.model.PairTokenPayload
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,6 +25,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class ControlledViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val configStore: ConfigStore,
     private val dispatcher: CommandDispatcher,
     private val shizukuExecutor: ShizukuExecutor,
@@ -29,6 +33,11 @@ class ControlledViewModel @Inject constructor(
     private val pairingScanner: PairingScanner,
     private val pairingClient: PairingClient,
 ) : ViewModel() {
+
+    /** 无障碍快捷方式开关控制器(懒构造,依赖 Shizuku 状态判断)。 */
+    private val shortcutController by lazy {
+        AccessibilityShortcutController(appContext, shizukuExecutor)
+    }
 
     data class UiState(
         val paired: Boolean = false,
@@ -39,6 +48,12 @@ class ControlledViewModel @Inject constructor(
         val pairing: Boolean = false,
         /** 最近一次配对失败原因,展示在配对卡片中 */
         val pairError: String? = null,
+        /** 系统无障碍快捷方式是否已登记本应用(null=未知) */
+        val shortcutEnabled: Boolean? = null,
+        /** 快捷方式切换结果提示(null=无) */
+        val shortcutMsg: String? = null,
+        /** 快捷方式切换进行中 */
+        val shortcutBusy: Boolean = false,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -56,16 +71,48 @@ class ControlledViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             val config = configStore.load()
             val caps = buildCapabilityList()
+            val shortcutEnabled = if (isAccessibilityGranted()) shortcutController.isEnabled() else null
             val state = UiState(
                 paired = config != null,
                 deviceId = config?.deviceId.orEmpty(),
                 serviceRunning = false, // TODO: 观察 ControlledService 生命周期
                 capabilities = caps,
+                shortcutEnabled = shortcutEnabled,
             )
             withContext(Dispatchers.Main) {
-                _uiState.value = state
+                // 保留用户刚触发的 busy/msg 状态,只刷新数据字段
+                _uiState.value = state.copy(
+                    shortcutBusy = _uiState.value.shortcutBusy,
+                    shortcutMsg = _uiState.value.shortcutMsg,
+                )
             }
         }
+    }
+
+    /** 切换系统无障碍快捷方式;完成后刷新状态并给出结果提示。 */
+    fun toggleAccessibilityShortcut(enable: Boolean) {
+        if (_uiState.value.shortcutBusy) return
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) { _uiState.value = _uiState.value.copy(shortcutBusy = true, shortcutMsg = null) }
+            val err = runCatching { shortcutController.setEnabled(enable) }
+                .getOrElse { "操作失败: ${it.message}" }
+            val nowEnabled = runCatching { shortcutController.isEnabled() }.getOrDefault(enable)
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(
+                    shortcutBusy = false,
+                    shortcutEnabled = nowEnabled,
+                    shortcutMsg = err ?: (if (enable) "已开启" else "已关闭"),
+                )
+            }
+        }
+    }
+
+    private fun isAccessibilityGranted(): Boolean {
+        val enabled = android.provider.Settings.Secure.getString(
+            appContext.contentResolver,
+            android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+        ).orEmpty()
+        return enabled.contains(ControlledAccessibilityServiceFlag)
     }
 
     /** 扫码结果配对:相机界面由 zxing CaptureActivity 承担(见 MainActivity),此处只消费扫码文本。 */
@@ -138,7 +185,7 @@ class ControlledViewModel @Inject constructor(
         return listOf(
             CapabilityItem("Shizuku 桥接", shizukuExecutor.isAvailable(), "MUST"),
             CapabilityItem("Root(增强)", rootExecutor.isAvailable(), "OPT"),
-            CapabilityItem("无障碍服务", false, "OPT"), // TODO: 检测 AccessibilityServiceBridge.isConnected()
+            CapabilityItem("无障碍服务", isAccessibilityGranted(), "OPT"),
             CapabilityItem("设备管理", false, "OPT"),
             CapabilityItem("使用情况访问", false, "MUST"),
             CapabilityItem("通知监听", false, "OPT"),
@@ -146,3 +193,6 @@ class ControlledViewModel @Inject constructor(
         )
     }
 }
+
+/** ENABLED_ACCESSIBILITY_SERVICES 里本应用无障碍服务的组件片段(与 MainActivity 检测一致)。 */
+const val ControlledAccessibilityServiceFlag = "ControlledAccessibilityService"
