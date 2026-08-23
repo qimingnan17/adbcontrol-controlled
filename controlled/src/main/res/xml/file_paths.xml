@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- OTA 更新包共享路径:SelfHostedUpdateChannel 的下载缓存目录(cacheDir/updates) -->
+<paths>
+    <cache-path
+        name="updates"
+        path="updates/" />
+</paths>

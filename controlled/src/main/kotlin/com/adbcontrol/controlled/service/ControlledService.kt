@@ -26,6 +26,7 @@ import com.adbcontrol.controlled.oem.MiuiAdapter
 import com.adbcontrol.controlled.oem.OemAccessibilityGuard
 import com.adbcontrol.controlled.telemetry.TelemetryEngine
 import com.adbcontrol.controlled.ui.MainActivity
+import com.adbcontrol.controlled.update.UpdateRunner
 import com.adbcontrol.shared.model.AppConfig
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +57,7 @@ class ControlledService : LifecycleService() {
     @Inject lateinit var dispatcher: CommandDispatcher
     @Inject lateinit var miuiAdapter: MiuiAdapter
     @Inject lateinit var appTimeController: AppTimeController
+    @Inject lateinit var updateRunner: UpdateRunner
 
     /** agent 是否已用有效配置启动过;配对完成后由 onStartCommand 重载触发。 */
     @Volatile private var agentStarted = false
@@ -89,6 +91,8 @@ class ControlledService : LifecycleService() {
             telemetryEngine.start(config)
             appTimeController.start()
         }
+        // OTA 周期巡检(内部 30min 首查 + 6h 间隔,幂等)
+        updateRunner.startPeriodicChecks()
     }
 
     /** 配对/续期后由 UI 调用重启 agent。 */

@@ -172,6 +172,14 @@ private fun SetupScreen(
 
         CapabilityChecklist(uiState.capabilities)
 
+        // OTA 更新卡片:当前版本 + 流程状态 + 手动检查
+        val updateState by viewModel.updateState.collectAsState()
+        UpdateCard(
+            state = updateState,
+            currentVersion = com.adbcontrol.controlled.BuildConfig.VERSION_NAME,
+            onCheck = viewModel::checkUpdateNow,
+        )
+
         // 无障碍已授予时展示系统快捷方式开关(音量键长按 / 悬浮按钮入口)
         uiState.shortcutEnabled?.let { shortcutEnabled ->
             AccessibilityShortcutCard(
@@ -465,6 +473,50 @@ private fun OemKeepAliveCard() {
                 Button(onClick = { OemBatterySettings.openMiuiGodMode(ctx) }) {
                     Text("MIUI 神隐模式 / 应用锁")
                 }
+            }
+        }
+    }
+}
+
+/** OTA 更新卡片:展示当前版本、检查/下载/安装进度与手动触发入口。 */
+@Composable
+private fun UpdateCard(
+    state: com.adbcontrol.controlled.update.UpdateRunner.UpdateUiState,
+    currentVersion: String,
+    onCheck: () -> Unit,
+) {
+    GlassCard {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "应用更新",
+                color = AppColors.cyan,
+                fontSize = 14.sp,
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                text = "当前版本 v$currentVersion",
+                color = AppColors.textSecondary,
+                fontSize = 12.sp,
+            )
+            if (state.statusText.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = state.statusText,
+                    color = if (state.lastError != null) AppColors.rose else AppColors.textSecondary,
+                    fontSize = 12.sp,
+                )
+            }
+            if (state.progress >= 0) {
+                Spacer(modifier = Modifier.height(8.dp))
+                @Suppress("DEPRECATION")
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = state.progress / 100f,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(onClick = onCheck, enabled = !state.busy) {
+                Text(if (state.busy) "处理中…" else "立即检查更新")
             }
         }
     }

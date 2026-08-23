@@ -11,6 +11,7 @@ import com.adbcontrol.controlled.config.PairingScanner
 import com.adbcontrol.controlled.executor.CommandDispatcher
 import com.adbcontrol.controlled.executor.RootExecutor
 import com.adbcontrol.controlled.executor.ShizukuExecutor
+import com.adbcontrol.controlled.update.UpdateRunner
 import com.adbcontrol.shared.model.AppConfig
 import com.adbcontrol.shared.model.PairTokenPayload
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -32,7 +33,14 @@ class ControlledViewModel @Inject constructor(
     private val rootExecutor: RootExecutor,
     private val pairingScanner: PairingScanner,
     private val pairingClient: PairingClient,
+    private val updateRunner: UpdateRunner,
 ) : ViewModel() {
+
+    /** OTA 更新流程状态(供"应用更新"卡片实时展示)。 */
+    val updateState: kotlinx.coroutines.flow.StateFlow<UpdateRunner.UpdateUiState> = updateRunner.state
+
+    /** 手动触发一次 检查→下载→静默安装 流程。 */
+    fun checkUpdateNow() = updateRunner.trigger("manual")
 
     /** 无障碍快捷方式开关控制器(懒构造,依赖 Shizuku 状态判断)。 */
     private val shortcutController by lazy {
@@ -162,6 +170,7 @@ class ControlledViewModel @Inject constructor(
             r2 = response.r2,
             sessionKey = response.sessionKey,
             expiresAt = response.expiresAt,
+            serverUrl = payload.serverUrl,
         )
         withContext(Dispatchers.IO) { configStore.save(config) }
         withContext(Dispatchers.Main) {
