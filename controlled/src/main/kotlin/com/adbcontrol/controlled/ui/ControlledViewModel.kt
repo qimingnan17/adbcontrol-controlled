@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.adbcontrol.controlled.accessibility.AccessibilityShortcutController
 import com.adbcontrol.controlled.config.ConfigStore
 import com.adbcontrol.controlled.config.PairingClient
 import com.adbcontrol.controlled.config.PairingScanner
@@ -42,11 +41,6 @@ class ControlledViewModel @Inject constructor(
     /** 手动触发一次 检查→下载→静默安装 流程。 */
     fun checkUpdateNow() = updateRunner.trigger("manual")
 
-    /** 无障碍快捷方式开关控制器(懒构造,依赖 Shizuku 状态判断)。 */
-    private val shortcutController by lazy {
-        AccessibilityShortcutController(appContext, shizukuExecutor)
-    }
-
     data class UiState(
         val paired: Boolean = false,
         val deviceId: String = "",
@@ -56,12 +50,6 @@ class ControlledViewModel @Inject constructor(
         val pairing: Boolean = false,
         /** 最近一次配对失败原因,展示在配对卡片中 */
         val pairError: String? = null,
-        /** 系统无障碍快捷方式是否已登记本应用(null=未知) */
-        val shortcutEnabled: Boolean? = null,
-        /** 快捷方式切换结果提示(null=无) */
-        val shortcutMsg: String? = null,
-        /** 快捷方式切换进行中 */
-        val shortcutBusy: Boolean = false,
         /** 一键开启无障碍结果提示(null=无) */
         val a11yMsg: String? = null,
         /** 一键开启无障碍进行中 */
@@ -83,37 +71,17 @@ class ControlledViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             val config = configStore.load()
             val caps = buildCapabilityList()
-            val shortcutEnabled = if (isAccessibilityGranted()) shortcutController.isEnabled() else null
             val state = UiState(
                 paired = config != null,
                 deviceId = config?.deviceId.orEmpty(),
                 serviceRunning = false, // TODO: 观察 ControlledService 生命周期
                 capabilities = caps,
-                shortcutEnabled = shortcutEnabled,
             )
             withContext(Dispatchers.Main) {
                 // 保留用户刚触发的 busy/msg 状态,只刷新数据字段
                 _uiState.value = state.copy(
-                    shortcutBusy = _uiState.value.shortcutBusy,
-                    shortcutMsg = _uiState.value.shortcutMsg,
-                )
-            }
-        }
-    }
-
-    /** 切换系统无障碍快捷方式;完成后刷新状态并给出结果提示。 */
-    fun toggleAccessibilityShortcut(enable: Boolean) {
-        if (_uiState.value.shortcutBusy) return
-        viewModelScope.launch(Dispatchers.IO) {
-            withContext(Dispatchers.Main) { _uiState.value = _uiState.value.copy(shortcutBusy = true, shortcutMsg = null) }
-            val err = runCatching { shortcutController.setEnabled(enable) }
-                .getOrElse { "操作失败: ${it.message}" }
-            val nowEnabled = runCatching { shortcutController.isEnabled() }.getOrDefault(enable)
-            withContext(Dispatchers.Main) {
-                _uiState.value = _uiState.value.copy(
-                    shortcutBusy = false,
-                    shortcutEnabled = nowEnabled,
-                    shortcutMsg = err ?: (if (enable) "已开启" else "已关闭"),
+                    a11yBusy = _uiState.value.a11yBusy,
+                    a11yMsg = _uiState.value.a11yMsg,
                 )
             }
         }
