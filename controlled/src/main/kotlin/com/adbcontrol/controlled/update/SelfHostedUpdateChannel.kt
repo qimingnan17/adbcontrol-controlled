@@ -213,9 +213,16 @@ class SelfHostedUpdateChannel(
         return patchFile
     }
 
-    private fun isGitHubUrl(url: String): Boolean =
-        url.contains("github.com", ignoreCase = true) ||
-            url.contains("githubusercontent.com", ignoreCase = true)
+    /**
+     * 仅当 host 是 GitHub 真身时才走加速下载器。
+     * 注意必须按 host 判断而非子串包含:v13 踩坑 —— 后端 /update/check 会把直链改写为
+     * `{server}/update/apk?url=https%3A%2F%2Fgithub.com/...`,query 里含 "github.com"
+     * 字样但 host 是自家后端;子串匹配会把它误送进加速器再套公共代理前缀 → 403。
+     */
+    private fun isGitHubUrl(url: String): Boolean = runCatching {
+        val host = java.net.URI(url).host?.lowercase()
+        host == "github.com" || (host != null && host.endsWith(".githubusercontent.com"))
+    }.getOrDefault(false)
 
     private fun downloadFile(
         c: OkHttpClient,
