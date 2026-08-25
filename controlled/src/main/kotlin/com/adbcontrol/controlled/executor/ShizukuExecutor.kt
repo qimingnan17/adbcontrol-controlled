@@ -171,21 +171,22 @@ class ShizukuExecutor @Inject constructor(
         runShell(arrayOf("sh", "-c", shellLine), commandId, System.currentTimeMillis())
 
     /**
-     * OTA 静默安装:通过 stdin 流式喂包解决文件路径权限问题。
+     * OTA 静默安装:三步 session 模式,通过 stdin 流式喂包绕开文件路径权限。
      *
-     * 旧实现 `pm install -r <apk路径>` 必然失败:APK 在本应用私有缓存目录
-     * (/data/user/0/<pkg>/cache,权限 0700 仅自身可读),而 Shizuku 执行的进程是
-     * shell uid,无权读取该路径 → 必然 Permission denied。
+     * **为什么不能用 `pm install -r -S <size>` 单命令?**
+     * 实测 vivo/MIUI 等国产 ROM 的 pm 不支持单命令 stdin 模式,直接打印 help 并
+     * exit=255(表现为 exit=1 stderr=空)。必须用三步 session:
      *
-     * 修复:用 `pm install -S <size>` 从 stdin 读 APK 字节流,由本 App 进程
-     * (对自己的缓存目录有读权限)把字节写入远程进程 stdin(ParcelFileDescriptor),
-     * 写完关闭 stdin 发 EOF。绕开 filesystem 权限,不走任何中间路径。
+     * 1. `pm install-create -r` → 返回 session id(从 "Success: created install session [NNN]" 解析)
+     * 2. `pm install-write -S <size> <id> base.apk -` → 从 stdin 读指定字节写入 session
+     * 3. `pm install-commit <id>` → 提交安装
      *
-     * **管道死锁防护**:pm 的 stdout/stderr 管道缓冲区有限(约 64KB)。
-     * 若先写完 stdin 再读 stdout/stderr,pm 输出填满缓冲区后会被阻塞写不进去,
-     * 进而不再读 stdin → 写入方也阻塞 → 互相死锁。
-     * 因此必须并发:写 stdin 的同时读 stdout/stderr,三者独立进行。
-     * stdin 写完立即关闭发 EOF(pm 收到 EOF 才提交安装),读 stdout/stderr 持续读到 pm 退出。
+     * **文件权限问题**:APK 在本应用私有缓存目录(0700 仅自身可读),Shizuku 的 shell
+     * uid 无权读取。install-write 的 `-S` + stdin 模式由本 App 进程(对自己缓存有读权限)
+     * 把字节写入远程进程 stdin,绕开 filesystem 权限。
+     *
+     * **管道死锁防护**:install-write 阶段 pm 的 stdout/stderr 缓冲区有限(约 64KB),
+     * 必须并发:写 stdin 的同时读 stdout/stderr。stdin 写完立即关闭发 EOF。
      *
      * 86MB debug APK 传输+校验可能耗时,超时放宽到 180s。
      */
@@ -195,57 +196,116 @@ class ShizukuExecutor @Inject constructor(
             val binder = Shizuku.getBinder() ?: error("Shizuku binder null")
             val service = IShizukuService.Stub.asInterface(binder)
             val size = apkFile.length()
-            // -r 覆盖安装; -S <size> 从 stdin 读取指定字节数的 APK
-            val process = service.newProcess(arrayOf("pm", "install", "-r", "-S", size.toString()), null, null)
-            val stdinPfd: ParcelFileDescriptor? = runCatching { process.outputStream }.getOrNull()
-            val outPfd: ParcelFileDescriptor? = runCatching { process.inputStream }.getOrNull()
-            val errPfd: ParcelFileDescriptor? = runCatching { process.errorStream }.getOrNull()
-            try {
-                coroutineScope {
-                    // 三个并发任务:写 stdin / 读 stdout / 读 stderr
-                    // 必须并发,否则 pm 输出填满管道缓冲区后会阻塞 → 死锁
-                    val write = async(Dispatchers.IO) {
-                        runCatching {
-                            apkFile.inputStream().use { ins ->
-                                java.io.FileOutputStream(stdinPfd!!.fileDescriptor).use { outs ->
-                                    ins.copyTo(outs, bufferSize = 64 * 1024)
-                                }
-                            }
-                        }
-                        // 写完立即关闭 stdin → pm 收到 EOF 才会校验安装
-                        runCatching { stdinPfd?.close() }
-                    }
-                    val out = async(Dispatchers.IO) { readPfdFully(outPfd) }
-                    val err = async(Dispatchers.IO) { readPfdFully(errPfd) }
-                    val code = async(Dispatchers.IO) { process.waitFor() }
 
-                    withTimeoutOrNull(180_000L) {
-                        // 等三者全部完成(write 内已关闭 stdin)
-                        val writeErr = write.await()   // 写入过程中是否有异常
-                        val outV = out.await()
-                        val errV = err.await()
-                        val codeV = code.await()
-                        val duration = System.currentTimeMillis() - started
-                        // 写入失败优先报出(如 stdin 管道断裂)
-                        writeErr.onFailure {
-                            return@withTimeoutOrNull fail(commandId, "write-failed: ${it.message}", duration)
-                        }
-                        if (codeV == 0) ok(commandId, "installed size=$size ${outV.trim()}", duration)
-                        else fail(commandId, "exit=$codeV stdout=${outV.trim()} stderr=${errV.trim()}", duration)
-                    } ?: run {
-                        runCatching { process.destroy() }
-                        fail(commandId, "install timeout(180s)", System.currentTimeMillis() - started)
-                    }
-                }
-            } finally {
-                runCatching { stdinPfd?.close() }
-                runCatching { outPfd?.close() }
-                runCatching { errPfd?.close() }
-                runCatching { process.destroy() }
+            // Step 1: 创建安装 session,解析 sessionId
+            val createOut = execSimple(service, arrayOf("pm", "install-create", "-r"))
+            val sessionId = parseSessionId(createOut)
+                ?: return@runCatching fail(commandId, "install-create failed: $createOut", System.currentTimeMillis() - started)
+            Log.i(TAG, "ota install session=$sessionId size=$size")
+
+            // Step 2: install-write 从 stdin 写入 APK 字节
+            val writeOk = execInstallWriteStream(service, sessionId, size, apkFile)
+            if (!writeOk) {
+                runCatching { execSimple(service, arrayOf("pm", "install-abandon", sessionId.toString())) }
+                return@runCatching fail(commandId, "install-write failed session=$sessionId", System.currentTimeMillis() - started)
             }
+
+            // Step 3: 提交安装
+            val commitOut = execSimple(service, arrayOf("pm", "install-commit", sessionId.toString()))
+            val duration = System.currentTimeMillis() - started
+            val success = commitOut.startsWith("Success")
+            if (success) ok(commandId, "installed size=$size session=$sessionId $commitOut", duration)
+            else fail(commandId, "install-commit failed: $commitOut", duration)
         }.getOrElse {
             fail(commandId, "exception=${it.message}", 0L)
         }
+
+    /** 执行一条不需要 stdin 的简单 pm 命令,返回 stdout(含 stderr 合并)。 */
+    private suspend fun execSimple(service: IShizukuService, cmd: Array<String>): String =
+        withTimeoutOrNull(30_000L) {
+            coroutineScope {
+                val process = service.newProcess(cmd, null, null)
+                val outPfd: ParcelFileDescriptor? = runCatching { process.inputStream }.getOrNull()
+                val errPfd: ParcelFileDescriptor? = runCatching { process.errorStream }.getOrNull()
+                try {
+                    val out = async(Dispatchers.IO) { readPfdFully(outPfd) }
+                    val err = async(Dispatchers.IO) { readPfdFully(errPfd) }
+                    val code = async(Dispatchers.IO) { process.waitFor() }
+                    val outV = out.await()
+                    val errV = err.await()
+                    code.await()
+                    (outV + errV).trim()
+                } finally {
+                    runCatching { outPfd?.close() }
+                    runCatching { errPfd?.close() }
+                    runCatching { process.destroy() }
+                }
+            }
+        } ?: "timeout"
+
+    /** 从 "Success: created install session [12345]" 解析 sessionId。 */
+    private fun parseSessionId(output: String): Int? {
+        val regex = Regex("\\[(\\d+)]")
+        return regex.find(output)?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    /**
+     * 执行 `pm install-write -S <size> <id> base.apk -`,从 stdin 流式写入 APK。
+     * 并发:写 stdin / 读 stdout / 读 stderr,防管道缓冲区死锁。
+     */
+    private suspend fun execInstallWriteStream(
+        service: IShizukuService,
+        sessionId: Int,
+        size: Long,
+        apkFile: java.io.File,
+    ): Boolean = coroutineScope {
+        val process = service.newProcess(
+            arrayOf("pm", "install-write", "-S", size.toString(), sessionId.toString(), "base.apk", "-"),
+            null, null
+        )
+        val stdinPfd: ParcelFileDescriptor? = runCatching { process.outputStream }.getOrNull()
+        val outPfd: ParcelFileDescriptor? = runCatching { process.inputStream }.getOrNull()
+        val errPfd: ParcelFileDescriptor? = runCatching { process.errorStream }.getOrNull()
+        try {
+            val write = async(Dispatchers.IO) {
+                runCatching {
+                    apkFile.inputStream().use { ins ->
+                        java.io.FileOutputStream(stdinPfd!!.fileDescriptor).use { outs ->
+                            ins.copyTo(outs, bufferSize = 64 * 1024)
+                        }
+                    }
+                }
+                runCatching { stdinPfd?.close() } // EOF → install-write 校验
+            }
+            val out = async(Dispatchers.IO) { readPfdFully(outPfd) }
+            val err = async(Dispatchers.IO) { readPfdFully(errPfd) }
+            val code = async(Dispatchers.IO) { process.waitFor() }
+
+            withTimeoutOrNull(180_000L) {
+                val writeErr = write.await()
+                val outV = out.await()
+                val errV = err.await()
+                val codeV = code.await()
+                if (writeErr.isFailure) {
+                    Log.e(TAG, "install-write stdin failed: ${writeErr.exceptionOrNull()?.message}")
+                    false
+                } else if (codeV == 0 && outV.contains("Success")) {
+                    true
+                } else {
+                    Log.e(TAG, "install-write exit=$codeV out=${outV.trim()} err=${errV.trim()}")
+                    false
+                }
+            } ?: run {
+                runCatching { process.destroy() }
+                false
+            }
+        } finally {
+            runCatching { stdinPfd?.close() }
+            runCatching { outPfd?.close() }
+            runCatching { errPfd?.close() }
+            runCatching { process.destroy() }
+        }
+    }
 
     private suspend fun runShell(cmd: Array<String>, commandId: String, started: Long): ExecutionResult {
         return runCatching {
