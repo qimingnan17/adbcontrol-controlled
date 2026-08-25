@@ -6,8 +6,13 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -16,6 +21,7 @@ import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.IOException
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -29,10 +35,11 @@ import javax.inject.Singleton
  * GitHub520 优选 IP 表(启动快照 + 定期从 hosts 源刷新,SharedPreferences 缓存),
  * TLS/SNI 与证书校验仍按原域名进行,安全性不变;其他域名回退系统解析。
  *
- * 回退链(逐级尝试,均过 sha256 校验):
+ * 回退链(并发竞速,谁先通就用谁,其余自动取消):
  * 1. 直连(优选 IP DNS)
- * 2. ghfast.top / gh-proxy.com / mirror.ghproxy.com 公共加速前缀
- * 3. (隐含)优选 IP 失效时 DNS 层自动回退系统解析
+ * 2. ghfast.top / gh-proxy.com / ghproxy.net 公共加速前缀
+ * 单个代理失效不影响整体——只要还有一个源可用就能下载。
+ * 所有源 30s 内都无响应才报失败。
  */
 @Singleton
 class GitHubFastDownloader @Inject constructor(
@@ -60,11 +67,11 @@ class GitHubFastDownloader @Inject constructor(
     /** GitHub520 hosts 内容源(纯文本,"IP 域名" 每行一条)。 */
     private val hostsSource = "https://raw.hellogithub.com/hosts"
 
-    /** 公共加速前缀(顺序即优先级;服务时好时坏,失败自动下一个)。 */
+    /** 公共加速前缀(并发竞速,谁先通就用谁;失效不影响其他)。 */
     private val proxyPrefixes = listOf(
         "https://ghfast.top/",
         "https://gh-proxy.com/",
-        "https://mirror.ghproxy.com/",
+        "https://ghproxy.net/",
     )
 
     /** 优选 IP 缓存读取(过期则异步刷新,不阻塞调用方)。 */
@@ -160,28 +167,58 @@ class GitHubFastDownloader @Inject constructor(
     }
 
     /**
-     * 下载文件到 [target]:先直连(优选 IP),失败依次试加速前缀。
-     * 全部失败抛最后一次异常。
+     * 下载文件到 [target]:并发竞速所有源(直连 + 代理),谁先通就用谁下载。
+     * 单个代理失效不影响整体——只要还有一个源可用就能成功。
+     * 所有源 30s 内都无响应才抛异常。
      */
     suspend fun download(url: String, target: File, onProgress: (Int) -> Unit): File =
         withContext(Dispatchers.IO) {
             refreshIfStaleBlocking()
-            val attempts = buildList {
-                add(url to client)
+            val sources = buildList {
+                add(url to client) // 直连(优选 IP)
                 proxyPrefixes.forEach { prefix -> add((prefix + url) to proxyClient) }
             }
-            var lastErr: Throwable? = null
-            for ((attemptUrl, c) in attempts) {
-                try {
-                    Log.i(TAG, "download try: $attemptUrl")
-                    return@withContext downloadOnce(attemptUrl, c, target, onProgress)
-                } catch (t: Throwable) {
-                    lastErr = t
-                    Log.w(TAG, "download failed via $attemptUrl: ${t.message}")
+            // 并发探测:所有源同时发 HEAD,谁先返回 200+有 body 就用谁
+            val (winUrl, winClient) = try {
+                pickFastestSource(sources)
+            } catch (t: Throwable) {
+                Log.e(TAG, "all sources unreachable within 30s: ${t.message}")
+                throw IOException("所有下载源均不可用(直连+${proxyPrefixes.size}个代理),请检查网络后重试", t)
+            }
+            Log.i(TAG, "race winner: $winUrl")
+            downloadOnce(winUrl, winClient, target, onProgress)
+        }
+
+    /**
+     * 并发竞速选最快可达的源。
+     * 每个源发 HEAD 请求:成功(HTTP 200 + Content-Length>0)就立即返回;
+     * 失败/超时的源挂起(不返回),这样 select 只会选中第一个成功的源。
+     * 全部失败则 30s 超时抛出。
+     */
+    private suspend fun pickFastestSource(
+        sources: List<Pair<String, OkHttpClient>>,
+    ): Pair<String, OkHttpClient> = coroutineScope {
+        val deferreds = sources.map { (url, c) ->
+            async(Dispatchers.IO) {
+                val ok = runCatching {
+                    c.newCall(Request.Builder().url(url).head().build()).execute().use { resp ->
+                        resp.isSuccessful &&
+                            (resp.header("Content-Length")?.toLongOrNull() ?: 0L) > 0L
+                    }
+                }.getOrDefault(false)
+                if (ok) url to c else awaitCancellation() // 失败挂起,不参与竞速
+            }
+        }
+        try {
+            withTimeout(30_000L) {
+                select<Pair<String, OkHttpClient>> {
+                    deferreds.forEach { d -> d.onAwait { it } }
                 }
             }
-            throw lastErr ?: IllegalStateException("download failed: $url")
+        } finally {
+            deferreds.forEach { it.cancel() } // 取消所有探测(无论赢没赢)
         }
+    }
 
     private fun downloadOnce(
         url: String,

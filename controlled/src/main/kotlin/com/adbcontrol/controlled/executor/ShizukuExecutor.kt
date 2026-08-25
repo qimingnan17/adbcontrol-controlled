@@ -181,6 +181,12 @@ class ShizukuExecutor @Inject constructor(
      * (对自己的缓存目录有读权限)把字节写入远程进程 stdin(ParcelFileDescriptor),
      * 写完关闭 stdin 发 EOF。绕开 filesystem 权限,不走任何中间路径。
      *
+     * **管道死锁防护**:pm 的 stdout/stderr 管道缓冲区有限(约 64KB)。
+     * 若先写完 stdin 再读 stdout/stderr,pm 输出填满缓冲区后会被阻塞写不进去,
+     * 进而不再读 stdin → 写入方也阻塞 → 互相死锁。
+     * 因此必须并发:写 stdin 的同时读 stdout/stderr,三者独立进行。
+     * stdin 写完立即关闭发 EOF(pm 收到 EOF 才提交安装),读 stdout/stderr 持续读到 pm 退出。
+     *
      * 86MB debug APK 传输+校验可能耗时,超时放宽到 180s。
      */
     suspend fun installApkStreamed(apkFile: java.io.File, commandId: String = "ota-install"): ExecutionResult =
@@ -189,34 +195,43 @@ class ShizukuExecutor @Inject constructor(
             val binder = Shizuku.getBinder() ?: error("Shizuku binder null")
             val service = IShizukuService.Stub.asInterface(binder)
             val size = apkFile.length()
+            // -r 覆盖安装; -S <size> 从 stdin 读取指定字节数的 APK
             val process = service.newProcess(arrayOf("pm", "install", "-r", "-S", size.toString()), null, null)
             val stdinPfd: ParcelFileDescriptor? = runCatching { process.outputStream }.getOrNull()
             val outPfd: ParcelFileDescriptor? = runCatching { process.inputStream }.getOrNull()
             val errPfd: ParcelFileDescriptor? = runCatching { process.errorStream }.getOrNull()
             try {
                 coroutineScope {
+                    // 三个并发任务:写 stdin / 读 stdout / 读 stderr
+                    // 必须并发,否则 pm 输出填满管道缓冲区后会阻塞 → 死锁
                     val write = async(Dispatchers.IO) {
-                        // 本进程读自己的文件,写远程进程 stdin;写完必须关掉 stdin 让 pm 收到 EOF
                         runCatching {
                             apkFile.inputStream().use { ins ->
                                 java.io.FileOutputStream(stdinPfd!!.fileDescriptor).use { outs ->
-                                    ins.copyTo(outs)
+                                    ins.copyTo(outs, bufferSize = 64 * 1024)
                                 }
                             }
                         }
+                        // 写完立即关闭 stdin → pm 收到 EOF 才会校验安装
+                        runCatching { stdinPfd?.close() }
                     }
-                    val out = async(Dispatchers.IO) { readPfd(outPfd) }
-                    val err = async(Dispatchers.IO) { readPfd(errPfd) }
+                    val out = async(Dispatchers.IO) { readPfdFully(outPfd) }
+                    val err = async(Dispatchers.IO) { readPfdFully(errPfd) }
                     val code = async(Dispatchers.IO) { process.waitFor() }
+
                     withTimeoutOrNull(180_000L) {
-                        write.await()
-                        runCatching { stdinPfd?.close() } // EOF → pm 开始真正安装
+                        // 等三者全部完成(write 内已关闭 stdin)
+                        val writeErr = write.await()   // 写入过程中是否有异常
                         val outV = out.await()
                         val errV = err.await()
                         val codeV = code.await()
                         val duration = System.currentTimeMillis() - started
+                        // 写入失败优先报出(如 stdin 管道断裂)
+                        writeErr.onFailure {
+                            return@withTimeoutOrNull fail(commandId, "write-failed: ${it.message}", duration)
+                        }
                         if (codeV == 0) ok(commandId, "installed size=$size ${outV.trim()}", duration)
-                        else fail(commandId, "exit=$codeV stderr=${errV.trim()}", duration)
+                        else fail(commandId, "exit=$codeV stdout=${outV.trim()} stderr=${errV.trim()}", duration)
                     } ?: run {
                         runCatching { process.destroy() }
                         fail(commandId, "install timeout(180s)", System.currentTimeMillis() - started)
@@ -275,6 +290,26 @@ class ShizukuExecutor @Inject constructor(
         if (pfd == null) return ""
         return runCatching {
             FileInputStream(pfd.fileDescriptor).use { it.bufferedReader().readText() }
+        }.getOrElse { "" }
+    }
+
+    /**
+     * 完整读取 PFD 到 EOF,返回全部文本。
+     * install 场景 pm 输出可能超过 readText() 内部缓冲区,改用循环 read 确保不丢内容。
+     */
+    private fun readPfdFully(pfd: ParcelFileDescriptor?): String {
+        if (pfd == null) return ""
+        return runCatching {
+            val sb = StringBuilder()
+            FileInputStream(pfd.fileDescriptor).use { fis ->
+                val buf = ByteArray(8192)
+                while (true) {
+                    val n = fis.read(buf)
+                    if (n < 0) break
+                    sb.append(String(buf, 0, n, Charsets.UTF_8))
+                }
+            }
+            sb.toString()
         }.getOrElse { "" }
     }
 
