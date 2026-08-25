@@ -50,7 +50,15 @@ class SelfHostedUpdateChannel(
         runCatching { configStore.load() }.getOrNull()?.takeIf { it.serverUrl.isNotBlank() }
 
     override suspend fun check(): UpdateCheckResponse? = withContext(Dispatchers.IO) {
-        val cfg = currentConfig() ?: return@withContext null
+        val diag = StringBuilder()
+        fun diag(s: String) { Log.i(TAG, s); diag.append(s).append('\n') }
+        val cfg = currentConfig()
+        if (cfg == null) {
+            diag("check: currentConfig()=null (未配对或 serverUrl 为空),更新通道关闭")
+            writeDiagFile(diag.toString())
+            return@withContext null
+        }
+        diag("check: cfg loaded, deviceId=${cfg.deviceId}, serverUrl=${cfg.serverUrl}, curVc=${currentVersionCode()}, curVn=${currentVersionName()}")
         val serverUrl = cfg.serverUrl.trim().trimEnd('/')
         val queryUrl = android.net.Uri.parse(serverUrl).buildUpon()
             .appendPath("update").appendPath("check")
@@ -59,18 +67,34 @@ class SelfHostedUpdateChannel(
             .appendQueryParameter("currentVersionName", currentVersionName())
             .appendQueryParameter("channel", "stable")
             .build().toString()
+        diag("check: queryUrl=$queryUrl")
         runCatching {
             httpClient.newCall(Request.Builder().url(queryUrl).build()).execute().use { resp ->
+                diag("check: http ${resp.code}")
                 if (!resp.isSuccessful) {
-                    Log.w(TAG, "check http ${resp.code}")
+                    val errBody = resp.body?.string()?.take(200).orEmpty()
+                    diag("check: http not 2xx, body=$errBody")
+                    writeDiagFile(diag.toString())
                     return@withContext null
                 }
                 val body = resp.body?.string().orEmpty()
-                json.decodeFromString(UpdateCheckResponse.serializer(), body)
-                    .takeIf { it.hasUpdate }
+                diag("check: body=${body.take(300)}")
+                val parsed = json.decodeFromString(UpdateCheckResponse.serializer(), body)
+                diag("check: parsed hasUpdate=${parsed.hasUpdate} latestVc=${parsed.latestVersionCode} latestVn=${parsed.latestVersionName}")
+                writeDiagFile(diag.toString())
+                parsed.takeIf { it.hasUpdate }
             }
         }.getOrElse {
-            Log.e(TAG, "check failed", it); null
+            diag("check failed: ${it.javaClass.simpleName}: ${it.message}")
+            writeDiagFile(diag.toString())
+            null
+        }
+    }
+
+    /** 诊断日志写到 cache/ota_diag.txt(adb run-as 可读)。 */
+    private fun writeDiagFile(content: String) {
+        runCatching {
+            File(context.cacheDir, "ota_diag.txt").writeText(content)
         }
     }
 
@@ -123,11 +147,15 @@ class SelfHostedUpdateChannel(
             apk
         }
 
-    /** GitHub 链接走加速下载器,其他(自有后端/R2)直连。 */
+    /**
+     * GitHub 链接走加速下载器(带自有后端中转源),其他(自有后端/R2)直连。
+     * backendBase 传配对 serverUrl:下载器会把 {server}/update/apk?url= 中转源置顶竞速,
+     * 且赢家传输中断时自动换源重试 —— 解决直连/公共代理大文件传输被掐断的问题。
+     */
     private suspend fun fetch(url: String, name: String, onProgress: (Int) -> Unit): File {
         val target = File(cacheDir, name)
         return if (isGitHubUrl(url)) {
-            githubDownloader.download(url, target, onProgress)
+            githubDownloader.download(url, target, onProgress, currentConfig()?.serverUrl)
         } else {
             downloadFile(httpClient, url, target, onProgress)
         }

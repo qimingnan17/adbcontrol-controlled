@@ -80,12 +80,20 @@ class UpdateRunner @Inject constructor(
     }
 
     suspend fun runOnce(source: String) {
-        if (!mutex.tryLock()) return
+        Log.i(TAG, "runOnce: source=$source, trying mutex...")
+        if (!mutex.tryLock()) {
+            Log.w(TAG, "runOnce: mutex busy, skipped (source=$source)")
+            _state.value = _state.value.copy(busy = false, statusText = "另一个更新任务正在执行,请稍后")
+            return
+        }
         try {
             // 周期巡检节流:距上次检查不足 6h 跳过(设备频繁重启场景防风暴)
             if (source == "periodic") {
                 val last = prefs.getLong(KEY_LAST_CHECK, 0L)
-                if (System.currentTimeMillis() - last < PERIODIC_INTERVAL_MS) return
+                if (System.currentTimeMillis() - last < PERIODIC_INTERVAL_MS) {
+                    Log.i(TAG, "runOnce: periodic throttled, last=$last")
+                    return
+                }
             }
             prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
 
@@ -140,6 +148,9 @@ class UpdateRunner @Inject constructor(
             )
             notifyDone("更新失败：${t.message?.take(80)}")
         } finally {
+            // ⚠️ 必须释放 mutex,否则首次 runOnce 后所有后续触发(手动/push/周期)
+            // 都因 tryLock 失败被静默丢弃 → "检查更新"按钮永远无反应
+            runCatching { mutex.unlock() }
             cancelProgress()
         }
     }

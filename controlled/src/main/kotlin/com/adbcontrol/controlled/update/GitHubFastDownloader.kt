@@ -23,6 +23,7 @@ import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.net.InetAddress
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -35,7 +36,8 @@ import javax.inject.Singleton
  * GitHub520 优选 IP 表(启动快照 + 定期从 hosts 源刷新,SharedPreferences 缓存),
  * TLS/SNI 与证书校验仍按原域名进行,安全性不变;其他域名回退系统解析。
  *
- * 回退链(并发竞速,谁先通就用谁,其余自动取消):
+ * 回退链(并发竞速,谁先通就优先用谁;赢家传输中断自动换源续试):
+ * 0. 自有后端中转 {base}/update/apk?url=(最优先,境外后端拉 GitHub 稳定)
  * 1. 直连(优选 IP DNS)
  * 2. ghfast.top / gh-proxy.com / ghproxy.net 公共加速前缀
  * 单个代理失效不影响整体——只要还有一个源可用就能下载。
@@ -167,27 +169,52 @@ class GitHubFastDownloader @Inject constructor(
     }
 
     /**
-     * 下载文件到 [target]:并发竞速所有源(直连 + 代理),谁先通就用谁下载。
-     * 单个代理失效不影响整体——只要还有一个源可用就能成功。
-     * 所有源 30s 内都无响应才抛异常。
+     * 下载文件到 [target]:
+     * 1. 并发竞速所有源(后端中转 + 直连 + 公共代理),HEAD 最先通的排最前;
+     * 2. 依次尝试:赢家下载中断(EOF/StreamReset 等大文件传输被掐)时,
+     *    自动换下一个源续试,不再一次定生死。
+     * [backendBase] 为自有后端地址时,追加 `{base}/update/apk?url=` 中转源并置顶——
+     * 境外后端拉 GitHub 稳定,且设备到后端的链路已被 check 请求长期验证。
      */
-    suspend fun download(url: String, target: File, onProgress: (Int) -> Unit): File =
-        withContext(Dispatchers.IO) {
-            refreshIfStaleBlocking()
-            val sources = buildList {
-                add(url to client) // 直连(优选 IP)
-                proxyPrefixes.forEach { prefix -> add((prefix + url) to proxyClient) }
+    suspend fun download(
+        url: String,
+        target: File,
+        onProgress: (Int) -> Unit,
+        backendBase: String? = null,
+    ): File = withContext(Dispatchers.IO) {
+        refreshIfStaleBlocking()
+        val sources = buildList {
+            backendBase?.takeIf { it.isNotBlank() }?.let { base ->
+                add(
+                    base.trim().trimEnd('/') + "/update/apk?url=" +
+                        URLEncoder.encode(url, "UTF-8") to proxyClient
+                )
             }
-            // 并发探测:所有源同时发 HEAD,谁先返回 200+有 body 就用谁
-            val (winUrl, winClient) = try {
-                pickFastestSource(sources)
-            } catch (t: Throwable) {
-                Log.e(TAG, "all sources unreachable within 30s: ${t.message}")
-                throw IOException("所有下载源均不可用(直连+${proxyPrefixes.size}个代理),请检查网络后重试", t)
-            }
-            Log.i(TAG, "race winner: $winUrl")
-            downloadOnce(winUrl, winClient, target, onProgress)
+            add(url to client) // 直连(优选 IP)
+            proxyPrefixes.forEach { prefix -> add((prefix + url) to proxyClient) }
         }
+        // 并发探测:所有源同时发 HEAD,谁先返回 200+有 body 就排最前;探测全挂则按原顺序逐个试
+        val ordered = try {
+            val (winUrl, _) = pickFastestSource(sources)
+            Log.i(TAG, "race winner: $winUrl")
+            listOf(sources.first { it.first == winUrl }) + sources.filterNot { it.first == winUrl }
+        } catch (t: Throwable) {
+            Log.w(TAG, "probe race failed (${t.message}); try sources sequentially")
+            sources
+        }
+        var lastErr: Throwable? = null
+        for ((srcUrl, srcClient) in ordered) {
+            try {
+                return@withContext downloadOnce(srcUrl, srcClient, target, onProgress)
+            } catch (t: Throwable) {
+                lastErr = t
+                Log.w(TAG, "source failed, switch next: ${t.javaClass.simpleName}: ${t.message} ($srcUrl)")
+                File(target.absolutePath + ".part").delete()
+                target.delete()
+            }
+        }
+        throw IOException("所有下载源均失败(含中断换源重试)", lastErr)
+    }
 
     /**
      * 并发竞速选最快可达的源。
