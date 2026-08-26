@@ -27,6 +27,19 @@ android {
         }
     }
 
+    signingConfigs {
+        // 固定调试签名入库(个人项目):GitHub Actions runner 每次构建都会随机生成
+        // debug.keystore,导致 CI 各版本之间、CI 与本地构建之间签名互不相同,
+        // OTA 覆盖安装必报 INSTALL_FAILED_UPDATE_INCOMPATIBLE —— 此前从未暴露,
+        // 是因为 OTA 从未成功走到安装阶段。入库后本地与 CI 统一。
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
@@ -41,6 +54,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // OTA 要求签名一致:release 沿用入库的固定 debug 签名,才能覆盖安装现网设备
+            // 上的既有包(否则 INSTALL_FAILED_UPDATE_INCOMPATIBLE)。CI 已从 assembleDebug
+            // 切到 assembleRelease:R8 后体积从 ~82MB 降到 ~11MB,fly 免费机中转不再被打爆。
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
