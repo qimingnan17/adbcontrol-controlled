@@ -42,13 +42,12 @@ class MqttManager(
     private var config: AppConfig? = null
 
     /**
-     * 息屏保活锁:手机长时间息屏时,国产 ROM/Doze 会挂起 CPU 导致 Paho keepalive
-     * 心跳发不出去而被 broker 判死。连接期间持有 partial WakeLock(CPU 亮、屏幕灭),
-     * 配合前台服务把断联概率压到最低。带超时上限防异常路径泄漏,重连成功时续期。
+     * 息屏瞬时保活锁:在网络连接建立、报文收发等活跃时刻短暂持有 partial WakeLock,
+     * 避免持续 6 小时无条件持锁导致系统无法进入 Doze 深度休眠而大幅耗电。
      */
     private var wakeLock: android.os.PowerManager.WakeLock? = null
 
-    private fun acquireKeepAliveLock() {
+    private fun acquireTransientLock(timeoutMs: Long = WAKELOCK_DEFAULT_TIMEOUT_MS) {
         runCatching {
             val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
             if (wakeLock == null) {
@@ -56,8 +55,8 @@ class MqttManager(
                     setReferenceCounted(false)
                 }
             }
-            wakeLock?.takeIf { !it.isHeld }?.acquire(WAKELOCK_TIMEOUT_MS)
-        }.onFailure { Log.w(TAG, "acquire wake lock failed", it) }
+            wakeLock?.acquire(timeoutMs)
+        }.onFailure { Log.w(TAG, "acquire transient wake lock failed", it) }
     }
 
     private fun releaseKeepAliveLock() {
@@ -78,21 +77,26 @@ class MqttManager(
 
     /** 初始化并连接。 */
     fun start(config: AppConfig) {
+        val current = this.config
+        val reconnectRequired = current?.broker != config.broker || current?.sessionKey != config.sessionKey
         this.config = config
-        connectInternal(config)
+        if (reconnectRequired || client?.isConnected != true) {
+            connectInternal(config)
+        }
     }
 
     private fun connectInternal(config: AppConfig) {
         runCatching {
-            // 已连接相同 host 直接返回;否则断开旧连接重建,避免 config 指向新 broker 而 client 仍连旧 broker
-            if (client?.isConnected == true && this.config?.broker?.host == config.broker.host) return
             if (client != null) stop()
 
             val broker = config.broker
-            val serverUri = if (broker.useTls) {
-                "ssl://${broker.host}:${broker.port}"
-            } else {
-                "tcp://${broker.host}:${broker.port}"
+            // useWs=true 走 MQTT over WebSocket(wss/ws,EMQX WS 路径默认 /mqtt),
+            // 用于自部署 EMQX 经 Cloudflare Tunnel 的场景;否则保持裸 TCP。
+            val serverUri = when {
+                broker.useWs && broker.useTls -> "wss://${broker.host}:${broker.port}${broker.wsPath}"
+                broker.useWs -> "ws://${broker.host}:${broker.port}${broker.wsPath}"
+                broker.useTls -> "ssl://${broker.host}:${broker.port}"
+                else -> "tcp://${broker.host}:${broker.port}"
             }
             val persistence = MqttDefaultFilePersistence(
                 File(context.filesDir, "mqtt-persistence").absolutePath
@@ -105,13 +109,10 @@ class MqttManager(
             mqttClient.setCallback(object : MqttCallbackExtended {
                 override fun connectComplete(reconnect: Boolean, serverURI: String?) {
                     Log.i(TAG, "connectComplete reconnect=$reconnect uri=$serverURI")
-                    // 连接建立(含自动重连)即持有息屏保活锁;重连成功相当于续期
-                    acquireKeepAliveLock()
-                    // 订阅成功后才置 CONNECTED;订阅前用 RECONNECTING/CONNECTING 占位
+                    // 连接建立(含自动重连)时短暂持锁,确保订阅与握手完成
+                    acquireTransientLock(WAKELOCK_CONNECT_TIMEOUT_MS)
                     if (reconnect) _connectionState.value = ConnectionState.RECONNECTING
                     subscribeTopics(mqttClient, config.deviceId)
-                    _connectionState.value = ConnectionState.CONNECTED
-                    listener?.onConnected()
                 }
 
                 override fun connectionLost(cause: Throwable?) {
@@ -129,6 +130,8 @@ class MqttManager(
 
                 override fun messageArrived(topic: String?, message: MqttMessage?) {
                     if (topic == null || message == null) return
+                    // 收到报文短暂持锁,防止处理或唤醒分发时 CPU 立即休眠
+                    acquireTransientLock(WAKELOCK_DEFAULT_TIMEOUT_MS)
                     handleMessage(topic, message, config)
                 }
 
@@ -146,13 +149,15 @@ class MqttManager(
                 if (broker.useTls) {
                     socketFactory = SSLSocketFactory.getDefault() as SSLSocketFactory
                 }
-                // LWT: device/offline/{deviceId} QoS 1,载荷裸 deviceId(主控按 topic 路由识别)
+                // LWT: device/offline/{deviceId} QoS 1,载荷裸 deviceId(主控按 topic 路由识别)。
+                // retained 必须为 false:broker 会永久保留最后一条遗嘱,后端 ingestor 每次重连
+                // 重新订阅时都会收到这条保留消息,把已上线的设备重新标成离线。
                 val willTopic = "device/offline/${config.deviceId}"
                 setWill(
                     willTopic,
                     config.deviceId.toByteArray(Charsets.UTF_8),
                     1,
-                    true,
+                    false,
                 )
             }
 
@@ -186,10 +191,23 @@ class MqttManager(
         val qos = intArrayOf(1, 1, 1, 0, 1)
         runCatching {
             client.subscribe(topics, qos, null, object : IMqttActionListener {
-                override fun onSuccess(asyncActionToken: IMqttToken?) { Log.i(TAG, "subscribe ok") }
-                override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) { Log.e(TAG, "subscribe failed", exception) }
+                override fun onSuccess(asyncActionToken: IMqttToken?) {
+                    Log.i(TAG, "subscribe ok")
+                    _connectionState.value = ConnectionState.CONNECTED
+                    listener?.onConnected()
+                }
+
+                override fun onFailure(asyncActionToken: IMqttToken?, exception: Throwable?) {
+                    Log.e(TAG, "subscribe failed", exception)
+                    _connectionState.value = ConnectionState.FAILED
+                    listener?.onDisconnected(exception)
+                }
             })
-        }.onFailure { Log.e(TAG, "subscribe failed", it) }
+        }.onFailure {
+            Log.e(TAG, "subscribe failed", it)
+            _connectionState.value = ConnectionState.FAILED
+            listener?.onDisconnected(it)
+        }
     }
 
     private fun handleMessage(topic: String, message: MqttMessage, config: AppConfig) {
@@ -240,6 +258,7 @@ class MqttManager(
     fun publish(message: WsMessage, topic: String, qos: Int = 1): Boolean {
         val cfg = config ?: return false
         val mqtt = client ?: return false
+        acquireTransientLock(WAKELOCK_DEFAULT_TIMEOUT_MS)
         repeat(3) { attempt ->
             val result = runCatching {
                 val payload = codec.encode(message, cfg.sessionKey)
@@ -249,7 +268,6 @@ class MqttManager(
             }
             if (result.isSuccess) return true
             Log.w(TAG, "publish attempt ${attempt + 1} failed to $topic", result.exceptionOrNull())
-            if (attempt < 2) Thread.sleep(200)
         }
         Log.e(TAG, "publish finally failed to $topic after 3 attempts")
         return false
@@ -300,7 +318,8 @@ class MqttManager(
         private const val TAG = "MqttManager"
         private const val WAKELOCK_TAG = "adbcontrol:mqtt_keepalive"
 
-        /** 保活锁单次持有时限:6 小时,connectComplete(重连)时会重新 acquire 续期。 */
-        private const val WAKELOCK_TIMEOUT_MS = 6L * 60 * 60 * 1000
+        /** 瞬时保活锁持有时限: 网络活跃/报文收发 15 秒, 建立连接与订阅 30 秒。 */
+        private const val WAKELOCK_DEFAULT_TIMEOUT_MS = 15_000L
+        private const val WAKELOCK_CONNECT_TIMEOUT_MS = 30_000L
     }
 }

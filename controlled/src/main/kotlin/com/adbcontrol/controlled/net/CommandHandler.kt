@@ -124,21 +124,43 @@ class CommandHandler(
         }
     }
 
-    /** 解码 PNG → 等比缩放到最大边 [maxDimen] → JPEG 压缩。 */
+    /** 解码 PNG → 等比缩放到最大边 [maxDimen] → JPEG 压缩。包含 inSampleSize 与内存安全释放。 */
     private fun downscaleJpeg(png: ByteArray, maxDimen: Int, quality: Int): ByteArray {
-        val src = BitmapFactory.decodeByteArray(png, 0, png.size)
-            ?: return png
-        val scale = maxDimen.toFloat() / maxOf(src.width, src.height).coerceAtLeast(1)
-        val w = (src.width * scale).toInt().coerceIn(1, src.width)
-        val h = (src.height * scale).toInt().coerceIn(1, src.height)
-        val scaled = Bitmap.createScaledBitmap(src, w, h, true)
+        val boundsOptions = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeByteArray(png, 0, png.size, boundsOptions)
+        val rawWidth = boundsOptions.outWidth
+        val rawHeight = boundsOptions.outHeight
+        if (rawWidth <= 0 || rawHeight <= 0) return png
+
+        var sampleSize = 1
+        val maxSide = maxOf(rawWidth, rawHeight)
+        while (maxSide / (sampleSize * 2) >= maxDimen) {
+            sampleSize *= 2
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        val src = BitmapFactory.decodeByteArray(png, 0, png.size, decodeOptions) ?: return png
+
+        var scaled: Bitmap? = null
         return try {
+            val scale = maxDimen.toFloat() / maxOf(src.width, src.height).coerceAtLeast(1)
+            val w = (src.width * scale).toInt().coerceIn(1, src.width)
+            val h = (src.height * scale).toInt().coerceIn(1, src.height)
+            scaled = if (w == src.width && h == src.height) src else Bitmap.createScaledBitmap(src, w, h, true)
             ByteArrayOutputStream().use { baos ->
                 scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
                 baos.toByteArray()
             }
+        } catch (e: Throwable) {
+            Log.w(TAG, "downscaleJpeg compress failed", e)
+            png
         } finally {
-            if (scaled !== src) runCatching { scaled.recycle() }
+            if (scaled != null && scaled !== src) runCatching { scaled.recycle() }
             runCatching { src.recycle() }
         }
     }

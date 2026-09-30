@@ -331,8 +331,13 @@ class ShizukuExecutor @Inject constructor(
                         if (codeV == 0) ok(commandId, outV.trim().ifEmpty { "OK" }, duration)
                         else fail(commandId, "exit=$codeV stderr=${errV.trim()}", duration)
                     } ?: run {
-                        // IRemoteProcess 只有 destroy()(AIDL),没有 destroyForcibly()(java.lang.Process)
+                        // 发生超时：必须在退出 coroutineScope 前主动 close PFD，解除子协程的阻塞读，避免协程死锁
+                        runCatching { outPfd?.close() }
+                        runCatching { errPfd?.close() }
                         runCatching { process.destroy() }
+                        out.cancel()
+                        err.cancel()
+                        code.cancel()
                         fail(commandId, "timeout", System.currentTimeMillis() - started)
                     }
                 }

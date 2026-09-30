@@ -36,6 +36,7 @@ object CommandShellBuilder {
         "dumpsys", "getprop", "pm list", "pm path", "pm dump",
         "ps", "top -n 1", "df", "free", "mount", "ls", "cat /proc/",
         "settings get", "getenforce", "id", "uptime",
+        "cmd statusbar", "cmd clipboard", "input tap", "input swipe", "input keyevent", "input text",
     )
 
     /** 危险字符:出现即拒绝 shell 透传(管道 / 重定向 / 命令分隔 / 后台 / 转义)。 */
@@ -95,6 +96,12 @@ object CommandShellBuilder {
             // 转义单引号
             val safe = text.replace("'", "'\\''")
             "input text '$safe'"
+        }
+        "pasteText" -> {
+            val text = c.params["text"] ?: return null
+            // 过滤危险控制符并转义双引号
+            val clean = text.replace("\r", "").replace("\n", " ").replace("\"", "\\\"").replace("$", "\\$").replace("`", "\\`")
+            "cmd clipboard set text \"$clean\" && input keyevent 279"
         }
         else -> null
     }

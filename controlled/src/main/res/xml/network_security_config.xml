@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    受控端 Agent 必须能连接用户在配对时指定的任意自建服务器:
+    Tailscale 直连 (http://100.x.x.x:8080)、局域网 IP、本地调试 (http://10.0.2.2:8080)
+    均为明文 HTTP。API 28+ 默认禁止 cleartext,会导致配对/上报全部失败
+    ("CLEARTEXT communication not permitted",模拟器实测复现)。
+    因此对全部目标放行明文;HTTPS 目标仍走 OkHttp 默认证书校验,不受影响。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

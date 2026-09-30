@@ -113,9 +113,13 @@ class ControlledService : LifecycleService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        // 服务常在配对之前就被拉起(开机自启/WorkManager 兜底),此时无配置处于 idle;
-        // 配对完成后 UI 再次 start 服务,在此重载配置并拉起 MQTT/遥测
-        if (!agentStarted) {
+        if (intent?.action == ACTION_RESTART_AGENT) {
+            val cfg = configStore.load()
+            if (cfg != null) {
+                Log.i(TAG, "onStartCommand: reload config and restart agent")
+                restartWithConfig(cfg)
+            }
+        } else if (!agentStarted) {
             Log.i(TAG, "onStartCommand: agent not started yet, (re)loading config")
             startAgent()
         }
@@ -192,30 +196,52 @@ class ControlledService : LifecycleService() {
 
     private fun startForegroundCompat() {
         val notification = buildForegroundNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // Android 14+:location 类型要求 ACCESS_FINE/COARSE 已授予,未授权时携带会抛
-            // SecurityException(配对前定位权限被拒 → FGS 崩溃循环,实测复现)。
-            // 动态裁剪:未授权就去掉 location,仅保留 connectedDevice|dataSync。
-            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            val hasLocation = androidx.core.content.ContextCompat.checkSelfPermission(
-                this, android.Manifest.permission.ACCESS_FINE_LOCATION
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
-                androidx.core.content.ContextCompat.checkSelfPermission(
-                    this, android.Manifest.permission.ACCESS_COARSE_LOCATION
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            if (hasLocation) {
-                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            }
-            try {
-                startForeground(NOTIFICATION_ID, notification, types)
-            } catch (e: Exception) {
-                // 兜底:类型仍被拒时不带类型启动,保住服务进程(遥测里非定位部分照常工作)
-                Log.e(TAG, "startForeground with types failed, fallback to untyped", e)
-                startForeground(NOTIFICATION_ID, notification)
-            }
-        } else {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // Android 13-:无 type 强制,两参即"不带细分类型"
             startForeground(NOTIFICATION_ID, notification)
+            return
+        }
+        // Android 14+:location 类型要求 ACCESS_FINE/COARSE 已授予且处于可定位资格状态,
+        // connectedDevice 亦有个别资格条件;未满足时携带对应 type 会抛 SecurityException
+        // (后台由 BootReceiver / HeartbeatGuardWorker 拉起时最易触发)。
+        // 动态裁剪:定位资格按运行时授权判断,授权过才带 location。
+        val hasLocation = androidx.core.content.ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                this, android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        if (hasLocation) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        }
+        // 注意:两参 startForeground 在 API 34+ 语义是 FOREGROUND_SERVICE_TYPE_MANIFEST
+        // (请求清单声明的全部类型),不能当"不带类型"的兜底,否则 location 再次抛异常
+        // 且未被捕获 → FGS 崩溃循环(实测复现)。必须逐级显式降级到最终 0 类型。
+        val candidates = buildList {
+            add(types)
+            add(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            add(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        }
+        for (candidate in candidates) {
+            try {
+                startForeground(NOTIFICATION_ID, notification, candidate)
+                if (candidate != types) {
+                    Log.w(TAG, "startForeground degraded to type mask $candidate")
+                }
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "startForeground with type mask $candidate rejected", e)
+            }
+        }
+        try {
+            startForeground(NOTIFICATION_ID, notification, 0)
+            Log.w(TAG, "startForeground succeeded with untyped FGS; 定位/设备类遥测暂不可用")
+        } catch (e: Exception) {
+            // 理论上不可达:0 类型不含任何需审批的 type。真发生时只能交由系统
+            // 按"未及时 startForeground"处理,这里保证不留未捕获异常。
+            Log.e(TAG, "startForeground fully rejected; service will be stopped by system", e)
         }
     }
 
@@ -224,12 +250,22 @@ class ControlledService : LifecycleService() {
         private const val CHANNEL_FOREGROUND = "service_foreground"
         private const val NOTIFICATION_ID = 1001
         private const val RESTART_WORK_NAME = "controlled_restart_on_task_removed"
+        const val ACTION_RESTART_AGENT = "com.adbcontrol.controlled.ACTION_RESTART_AGENT"
 
         /** 启动服务(供 BootReceiver / UI 调用)。 */
         fun start(context: Context) {
             val intent = Intent(context, ControlledService::class.java)
             runCatching { context.startForegroundService(intent) }
                 .onFailure { Log.w(TAG, "start service failed", it) }
+        }
+
+        /** 重载配置并重启 MQTT / 遥测。 */
+        fun restartAgent(context: Context) {
+            val intent = Intent(context, ControlledService::class.java).apply {
+                action = ACTION_RESTART_AGENT
+            }
+            runCatching { context.startForegroundService(intent) }
+                .onFailure { Log.w(TAG, "restart agent failed", it) }
         }
 
         /** 停止服务。 */

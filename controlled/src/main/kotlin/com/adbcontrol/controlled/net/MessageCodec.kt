@@ -62,16 +62,30 @@ class MessageCodec(
     fun decode(bytes: ByteArray, sessionKeyBase64: String?): WsMessage? {
         val envelope = runCatching {
             json.decodeFromString(MqttEnvelope.serializer(), String(bytes, Charsets.UTF_8))
-        }.getOrElse { return null }
+        }.getOrElse {
+            // 排障可观测:此前静默返回 null,链路故障(如主控端 payload 字段错发 Base64)无从定位。
+            // 只记原因,不落 payload/密钥内容。
+            android.util.Log.w("MessageCodec", "drop: envelope parse failed err=${it.message}")
+            return null
+        }
 
         if (sessionKeyBase64 != null) {
             val sig = envelope.signature
             // 配对后必带签名,缺失即拒绝(攻击者删 signature 字段无法绕过)
-            if (sig.isNullOrEmpty()) return null
+            if (sig.isNullOrEmpty()) {
+                android.util.Log.w("MessageCodec", "drop: missing signature (id=${envelope.id})")
+                return null
+            }
             val signingData = HmacSigner.buildSigningData(envelope.payload, envelope.id, envelope.timestamp)
-            if (!HmacSigner.verify(signingData, sessionKeyBase64, sig)) return null
+            if (!HmacSigner.verify(signingData, sessionKeyBase64, sig)) {
+                android.util.Log.w("MessageCodec", "drop: hmac verify failed (id=${envelope.id})")
+                return null
+            }
             // 重放窗口 5 分钟
-            if (!HmacSigner.isWithinReplayWindow(envelope.timestamp)) return null
+            if (!HmacSigner.isWithinReplayWindow(envelope.timestamp)) {
+                android.util.Log.w("MessageCodec", "drop: replay window exceeded (id=${envelope.id}, ts=${envelope.timestamp})")
+                return null
+            }
         }
         val type = runCatching { MessageType.valueOf(envelope.type) }.getOrDefault(MessageType.PUSH_DATA)
         return WsMessage(

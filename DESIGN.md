@@ -2,14 +2,14 @@
 
 基于 **MQTT + Shizuku** 的 Android 设备管理 Agent 平台。主控端通过 EMQX Cloud 实时下发指令,被控端经多通道执行器(Shizuku / Root / Accessibility)执行,并周期回传遥测数据(状态 / 位置 / 应用行为 / 健康),最终归档至远程 MySQL。
 
-> 当前阶段:三端代码已实现并沙箱编译通过,真机端到端联调待用户填入 EMQX/R2 凭证后跑通。本 README 既是方案文档也反映实现进度(见第十四章)。
+> 当前阶段:三端已全部部署上线并完成真实设备联调(见 14.1 线上部署实录);2026-08-23~26 完成 OTA 闭环与发布流水线(见下方"2026-08-23 ~ 08-26 升级")。本文档既是方案文档也反映实现进度(见第十四章)。
 
 ---
 
 ## 目录
 
 1. [项目介绍](#一项目介绍)
-2. [系统架构](#二系统架构)
+2. #二系统架构
 3. [Android Agent 设计](#三android-agent-设计)
 4. [MQTT 通信协议](#四mqtt-通信协议)
 5. [设备遥测系统](#五设备遥测系统)
@@ -36,15 +36,15 @@
 
 ### 1.2 核心能力
 
-| 能力域 | 说明 |
-| --- | --- |
-| 远程指令 | 应用管理、输入控制(点击/滑动/按键)、文件传输、系统控制、截屏录屏 |
-| 软件定时使用 | 时间窗口禁用 / 累计使用时长限制 / 提前 10 分钟提醒 |
-| 设备遥测 | 在线状态、电量、网络、GPS、App 前台行为、健康检查 |
-| 调度系统 | 主控端 cron 调度,本地 + 远程库双存 |
-| 安全 | TLS 8883、Device ID 认证、Payload 签名、QR 配对换 token |
-| 多设备 | 主控端管理多台被控端,能力雷达可视化 |
-| 更新 | 应用内自更新(Play Asset Delivery / 自建差分包) |
+| 能力域    | 说明                                            |
+| ------ | --------------------------------------------- |
+| 远程指令   | 应用管理、输入控制(点击/滑动/按键)、文件传输、系统控制、截屏录屏            |
+| 软件定时使用 | 时间窗口禁用 / 累计使用时长限制 / 提前 10 分钟提醒                |
+| 设备遥测   | 在线状态、电量、网络、GPS、App 前台行为、健康检查                  |
+| 调度系统   | 主控端 cron 调度,本地 + 远程库双存                        |
+| 安全     | TLS 8883、Device ID 认证、Payload 签名、QR 配对换 token |
+| 多设备    | 主控端管理多台被控端,能力雷达可视化                            |
+| 更新     | 应用内自更新(Play Asset Delivery / 自建差分包)           |
 
 ### 1.3 技术栈
 
@@ -104,19 +104,19 @@
 
 ### 2.2 模块划分
 
-| 模块 | 类型 | 职责 |
-| --- | --- | --- |
-| `:shared` | Kotlin/JVM | 协议、数据模型、cron 工具 |
-| `:controller` | Android Application | 主控端 |
-| `:controlled` | Android Application | 被控端 Agent |
+| 模块            | 类型                  | 职责              |
+| ------------- | ------------------- | --------------- |
+| `:shared`     | Kotlin/JVM          | 协议、数据模型、cron 工具 |
+| `:controller` | Android Application | 主控端             |
+| `:controlled` | Android Application | 被控端 Agent       |
 
 ### 2.3 三层执行桥接(关键)
 
-| 层 | 方案 | 能力 | 获取方式 |
-| --- | --- | --- | --- |
-| L1 主桥接 | Shizuku | shell 权限(无 root 全 ADB 等价能力) | 用户装 Shizuku App 并授权本应用 |
-| L2 增强 | Root | 全部 ADB 命令 + 直读系统文件 | 设备已 root |
-| L3 兼容 | Accessibility | 窗口监听 / 手势 / 截屏 / UI 控件拦截,无 root 可用 | 用户在系统设置开启无障碍 |
+| 层      | 方案            | 能力                                 | 获取方式                   |
+| ------ | ------------- | ---------------------------------- | ---------------------- |
+| L1 主桥接 | Shizuku       | shell 权限(无 root 全 ADB 等价能力)        | 用户装 Shizuku App 并授权本应用 |
+| L2 增强  | Root          | 全部 ADB 命令 + 直读系统文件                 | 设备已 root               |
+| L3 兼容  | Accessibility | 窗口监听 / 手势 / 截屏 / UI 控件拦截,无 root 可用 | 用户在系统设置开启无障碍           |
 
 > 普通应用无法 `Runtime.exec("adb ...")`。**Shizuku 是默认桥接方案**:它跑在 shell 进程中,本应用通过 Binder 拿到 `IShell` 接口,从而能执行 `am` / `pm` / `input` / `settings` / `screencap` 等命令,等价于 root 的执行能力,但不需要 root。Android 11+ 还可用无线调试启动 Shizuku,完全免 PC。
 
@@ -128,19 +128,19 @@
 
 ### 3.1 Foreground Service(常驻保活)
 
-| 层级 | 手段 | 说明 |
-| --- | --- | --- |
-| L1 前台通知 | `startForeground` + `setOngoing(true)` | 不可滑动清除的常驻通知,系统视为前台,降低被杀概率 |
-| L2 通知渠道 | `NotificationChannel` IMPORTANCE_LOW | showBadge=false,无声音,不打扰用户 |
-| L3 foregroundServiceType | `connectedDevice\|dataSync` | Android 14+ 必填 |
-| L4 电池白名单 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | 引导用户加入,避免 Doze 断连 |
-| L5 开机自启 | `BOOT_COMPLETED` + `LOCKED_BOOT_COMPLETED` | 锁屏也能直启 |
-| L6 任务滑掉重启 | `onTaskRemoved` | 重新 `startForegroundService(self)` |
-| L7 WorkManager 周期兜底 | `PeriodicWorkRequest` 15 分钟 | `HeartbeatGuardWorker` 检查并重连 |
-| L8 厂商后台管理 | 跳转厂商自启管理页 | 按 `Build.MANUFACTURER` 路由,合规适配(不写双进程守护) |
-| L9 MQTT Auto Reconnect | Paho `isAutomaticReconnect=true` | 内置指数退避重连 |
-| L10 Health Check | 主控端 60s 心跳 + EMQX REST 复核 | 双向判活,降低误判 |
-| L11 LWT 兜底 | MQTT Last Will | 即便 Agent 被杀,主控端秒级感知 |
+| 层级                       | 手段                                         | 说明                                      |
+| ------------------------ | ------------------------------------------ | --------------------------------------- |
+| L1 前台通知                  | `startForeground` + `setOngoing(true)`     | 不可滑动清除的常驻通知,系统视为前台,降低被杀概率               |
+| L2 通知渠道                  | `NotificationChannel` IMPORTANCE_LOW       | showBadge=false,无声音,不打扰用户               |
+| L3 foregroundServiceType | `connectedDevice\|dataSync`                | Android 14+ 必填                          |
+| L4 电池白名单                 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`     | 引导用户加入,避免 Doze 断连                       |
+| L5 开机自启                  | `BOOT_COMPLETED` + `LOCKED_BOOT_COMPLETED` | 锁屏也能直启                                  |
+| L6 任务滑掉重启                | `onTaskRemoved`                            | 重新 `startForegroundService(self)`       |
+| L7 WorkManager 周期兜底      | `PeriodicWorkRequest` 15 分钟                | `HeartbeatGuardWorker` 检查并重连            |
+| L8 厂商后台管理                | 跳转厂商自启管理页                                  | 按 `Build.MANUFACTURER` 路由,合规适配(不写双进程守护) |
+| L9 MQTT Auto Reconnect   | Paho `isAutomaticReconnect=true`           | 内置指数退避重连                                |
+| L10 Health Check         | 主控端 60s 心跳 + EMQX REST 复核                  | 双向判活,降低误判                               |
+| L11 LWT 兜底               | MQTT Last Will                             | 即便 Agent 被杀,主控端秒级感知                     |
 
 ```kotlin
 class ControlledService : LifecycleService() {
@@ -225,8 +225,7 @@ CommandExecutor
   "shizuku": true,
   "accessibility": true,
   "deviceAdmin": true,
-  "usageStats": true,
-  "notificationListener": true
+  "usageStats": true
 }
 ```
 
@@ -246,15 +245,15 @@ CommandExecutor
 6. 失败回执 COMMAND_RESULT(success=false, error="NO_PATH")
 ```
 
-| 能力矩阵 | 命令 | Shizuku/Root | Accessibility | DeviceAdmin |
-| --- | --- | --- | --- | --- |
-| 应用管理 | `pm install`/`am force-stop` | ✅ | ❌ | 部分(`setUninstallBlocked`) |
-| 输入控制 | 点击/滑动/按键 | ✅ `input tap` | ✅ `dispatchGesture` | ❌ |
-| 截屏 | `screencap` | ✅ | ✅ API 30+ `takeScreenshot` | ❌ |
-| 锁屏 | `input keyevent 26` | ✅ | ✅ `GLOBAL_ACTION_LOCK_SCREEN` | ✅ `lockNow()` |
-| 系统设置 | `settings put` | ✅ | ❌ | ❌ |
-| UI 拦截 | 屏蔽朋友圈入口 | ❌ | ✅ `findAccessibilityNodeInfosByText` | ❌ |
-| 通知 | `cmd notification post` | ✅ | ❌ | ❌ |
+| 能力矩阵  | 命令                           | Shizuku/Root  | Accessibility                        | DeviceAdmin               |
+| ----- | ---------------------------- | ------------- | ------------------------------------ | ------------------------- |
+| 应用管理  | `pm install`/`am force-stop` | ✅             | ❌                                    | 部分(`setUninstallBlocked`) |
+| 输入控制  | 点击/滑动/按键                     | ✅ `input tap` | ✅ `dispatchGesture`                  | ❌                         |
+| 截屏    | `screencap`                  | ✅             | ✅ API 30+ `takeScreenshot`           | ❌                         |
+| 锁屏    | `input keyevent 26`          | ✅             | ✅ `GLOBAL_ACTION_LOCK_SCREEN`        | ✅ `lockNow()`             |
+| 系统设置  | `settings put`               | ✅             | ❌                                    | ❌                         |
+| UI 拦截 | 屏蔽朋友圈入口                      | ❌             | ✅ `findAccessibilityNodeInfosByText` | ❌                         |
+| 通知    | `cmd notification post`      | ✅             | ❌                                    | ❌                         |
 
 ---
 
@@ -262,15 +261,15 @@ CommandExecutor
 
 ### 4.1 Broker 配置(运行时扫码获取,见 [8.3 QR 配对](#83-qr-配对))
 
-| 项 | 值 |
-| --- | --- |
-| Host | `o8cc1111.ala.cn-hangzhou.emqxsl.cn`(扫码导入) |
-| Port | 8883 (TLS) 主用 / 8084 (WSS) 备用 |
-| Username | `${appid}@${deviceId}`(EMQX Serverless username 规则) |
-| Password | 配对时由服务器签发的临时凭证(非明文 secret) |
-| ClientId | `controller-<uuid>` / `device-<uuid>`,全局唯一 |
-| cleanSession | false(持久订阅,离线消息不丢) |
-| LWT | `device/offline/{deviceId}` 或 `controller/offline/{deviceId}` |
+| 项            | 值                                                             |
+| ------------ | ------------------------------------------------------------- |
+| Host         | `o8cc1111.ala.cn-hangzhou.emqxsl.cn`(扫码导入)                    |
+| Port         | 8883 (TLS) 主用 / 8084 (WSS) 备用                                 |
+| Username     | `${appid}@${deviceId}`(EMQX Serverless username 规则)           |
+| Password     | 配对时由服务器签发的临时凭证(非明文 secret)                                    |
+| ClientId     | `controller-<uuid>` / `device-<uuid>`,全局唯一                    |
+| cleanSession | false(持久订阅,离线消息不丢)                                            |
+| LWT          | `device/offline/{deviceId}` 或 `controller/offline/{deviceId}` |
 
 ### 4.2 消息载荷
 
@@ -303,25 +302,25 @@ enum class MessageType {
 
 ### 4.3 Topic 设计
 
-| Topic | 方向 | QoS | 说明 |
-| --- | --- | --- | --- |
-| `cmd/{deviceId}` | 主控→被控 | 1 | COMMAND 载荷 |
-| `reminder/{deviceId}` | 主控→被控 | 1 | REMINDER 载荷 |
-| `push/{deviceId}` | 主控→被控 | 1 | PUSH_DATA 载荷 |
-| `result/{deviceId}` | 被控→主控 | 1 | COMMAND_RESULT / REMINDER_RESULT |
-| `ping/{deviceId}` | 主控→被控 | 0 | 心跳请求 |
-| `pong/{deviceId}` | 被控→主控 | 0 | 心跳响应 |
-| **遥测 topic** | | | |
-| `status/{deviceId}` | 被控→主控 | 1 | STATUS(在线/电量/网络/充电) |
-| `health/{deviceId}` | 被控→主控 | 1 | HEALTH(MQTT/Shizuku/Service 等健康项) |
-| `location/{deviceId}` | 被控→主控 | 0 | LOCATION(GPS,高频丢无碍) |
-| `activity/{deviceId}` | 被控→主控 | 1 | ACTIVITY(App 前台切换事件) |
-| `usage/{deviceId}` | 被控→主控 | 1 | USAGE(每用户每 App 每日时长) |
-| **状态 topic** | | | |
-| `device/offline/{deviceId}` | 被控 LWT | 1 | 被控掉线 |
-| `controller/offline/{deviceId}` | 主控 LWT | 1 | 主控掉线 |
-| **配对 topic** | | | |
-| `pair/{pairToken}` | 双向 | 1 | 配对交换临时凭证(短期) |
+| Topic                           | 方向     | QoS | 说明                                |
+| ------------------------------- | ------ | --- | --------------------------------- |
+| `cmd/{deviceId}`                | 主控→被控  | 1   | COMMAND 载荷                        |
+| `reminder/{deviceId}`           | 主控→被控  | 1   | REMINDER 载荷                       |
+| `push/{deviceId}`               | 主控→被控  | 1   | PUSH_DATA 载荷                      |
+| `result/{deviceId}`             | 被控→主控  | 1   | COMMAND_RESULT / REMINDER_RESULT  |
+| `ping/{deviceId}`               | 主控→被控  | 0   | 心跳请求                              |
+| `pong/{deviceId}`               | 被控→主控  | 0   | 心跳响应                              |
+| **遥测 topic**                    |        |     |                                   |
+| `status/{deviceId}`             | 被控→主控  | 1   | STATUS(在线/电量/网络/充电)               |
+| `health/{deviceId}`             | 被控→主控  | 1   | HEALTH(MQTT/Shizuku/Service 等健康项) |
+| `location/{deviceId}`           | 被控→主控  | 0   | LOCATION(GPS,高频丢无碍)               |
+| `activity/{deviceId}`           | 被控→主控  | 1   | ACTIVITY(App 前台切换事件)              |
+| `usage/{deviceId}`              | 被控→主控  | 1   | USAGE(每用户每 App 每日时长)              |
+| **状态 topic**                    |        |     |                                   |
+| `device/offline/{deviceId}`     | 被控 LWT | 1   | 被控掉线                              |
+| `controller/offline/{deviceId}` | 主控 LWT | 1   | 主控掉线                              |
+| **配对 topic**                    |        |     |                                   |
+| `pair/{pairToken}`              | 双向     | 1   | 配对交换临时凭证(短期)                      |
 
 主控订阅:`result/+`、`status/+`、`health/+`、`location/+`、`activity/+`、`usage/+`、`pong/+`、`device/offline/+`
 被控订阅:`cmd/{deviceId}`、`reminder/{deviceId}`、`push/{deviceId}`、`ping/{deviceId}`、`controller/offline/+`
@@ -330,11 +329,11 @@ enum class MessageType {
 
 ### 4.4 EMQX Cloud REST API(主控端在线查询)
 
-| 接口 | 用途 |
-| --- | --- |
+| 接口                                      | 用途                            |
+| --------------------------------------- | ----------------------------- |
 | `GET /subscriptions?_page=1&_limit=100` | 列出部署下所有订阅(clientid/topic/qos) |
-| `GET /clients/{clientid}/subscriptions` | 查指定被控端的订阅 |
-| `GET /clients` | 列出所有在线客户端 |
+| `GET /clients/{clientid}/subscriptions` | 查指定被控端的订阅                     |
+| `GET /clients`                          | 列出所有在线客户端                     |
 
 鉴权 HTTP Basic,用 `appid:app_secret`(EMQX 控制台分配)。REST 端口默认 8443(HTTPS,与 8883 共用证书)。主控端 Dashboard 启动调 `listOnlineDevices()`,每设备 60s 调 `isOnline(id)` 复核,与心跳 pong 交叉验证,降低误判。
 
@@ -418,7 +417,6 @@ enum class MessageType {
   "deviceAdmin": true,
   "batteryWhitelist": true,
   "usageStats": true,
-  "notificationListener": true,
   "android": "15",
   "appVersion": "1.2.3",
   "lastBootAt": 1718000000000,
@@ -450,11 +448,11 @@ enum class MessageType {
 
 三种模式可组合:
 
-| 模式 | 触发 | 被控端动作 |
-| --- | --- | --- |
-| 时间窗口禁用/放开 | cron 成对任务(SUSPEND / UNSUSPEND) | `pm disable-user` / `pm enable`(Shizuku)或无障碍切回 |
-| 累计使用时长限制 | 被控端周期采样 `UsageStatsManager`,达到阈值 | suspend 该 App + 提醒 |
-| 最后 10 分钟提醒 | 主控端在窗口结束前 10 分钟 cron 触发 | 下发 REMINDER,被控端发本地通知 |
+| 模式         | 触发                               | 被控端动作                                          |
+| ---------- | -------------------------------- | ---------------------------------------------- |
+| 时间窗口禁用/放开  | cron 成对任务(SUSPEND / UNSUSPEND)   | `pm disable-user` / `pm enable`(Shizuku)或无障碍切回 |
+| 累计使用时长限制   | 被控端周期采样 `UsageStatsManager`,达到阈值 | suspend 该 App + 提醒                             |
+| 最后 10 分钟提醒 | 主控端在窗口结束前 10 分钟 cron 触发          | 下发 REMINDER,被控端发本地通知                           |
 
 ```kotlin
 // 主控端窗口型任务(成对)
@@ -474,11 +472,11 @@ fun scheduleWindow(rule: WindowRule) {
 
 ### 6.3 多设备下发粒度
 
-| 粒度 | 实现 |
-| --- | --- |
-| 单设备 | `publish("cmd/$deviceId")` |
-| 多设备(显式) | 遍历 `device_ids` 逐个 publish |
-| 全广播 | 查所有 `enabled=1 AND status=online` 逐个 publish |
+| 粒度      | 实现                                           |
+| ------- | -------------------------------------------- |
+| 单设备     | `publish("cmd/$deviceId")`                   |
+| 多设备(显式) | 遍历 `device_ids` 逐个 publish                   |
+| 全广播     | 查所有 `enabled=1 AND status=online` 逐个 publish |
 
 > 不用 MQTT 通配 publish(主控端是 publish 方),应用层循环便于每台回报对账。
 
@@ -679,6 +677,7 @@ class ControllerMessageHandler(
 ```
 
 > 三道防线:
+> 
 > - **L1 本地 LRU 缓存**:重复 msg_id 在内存层拦截,99% 重发在此挡掉
 > - **L2 Room UNIQUE KEY**:LRU 没拦住(主控端重启、缓存丢失)的,数据库 UNIQUE KEY upsert 拦截
 > - **L3 EMQX ACK**:成功处理后立即 ACK,从源头停止重发
@@ -711,6 +710,7 @@ class ControllerMessageHandler(
 每条 `WsMessage` 带 `signature = HMAC-SHA256(payload + timestamp + deviceId, sessionKey)`。`sessionKey` 由配对时服务器随机下发,与 `deviceId` 绑定,存 EncryptedFile。
 
 防:
+
 - **伪造设备**:无 `sessionKey` 签不出有效 signature,EMQX 也可 ACL 拒绝
 - **重放攻击**:`timestamp` + 5 分钟窗口校验,过期拒绝
 - **非授权控制**:ACL 限定每个 clientid 只能 publish 自己的 `result/+` `status/+` 等,不能伪造他人
@@ -817,13 +817,16 @@ class ConfigStore(context: Context) {
 
 ### 9.2 系统级授权(需用户在设置中开启)
 
-| 服务 | 权限 | 获取方式 |
-| --- | --- | --- |
-| AccessibilityService | `BIND_ACCESSIBILITY_SERVICE` | 设置 → 无障碍 |
-| DeviceAdmin | `BIND_DEVICE_ADMIN` | 跳 `ACTION_ADD_DEVICE_ADMIN` 引导 |
-| UsageStatsManager | `PACKAGE_USAGE_STATS` | 跳 `ACTION_USAGE_ACCESS_SETTINGS` |
-| LocationManager | `ACCESS_FINE_LOCATION` 等 | 运行时申请 + 后台定位引导 |
-| NotificationListenerService | `BIND_NOTIFICATION_LISTENER_SERVICE` | 设置 → 通知访问 |
+| 服务                   | 权限                           | 获取方式                             |
+| -------------------- | ---------------------------- | -------------------------------- |
+| AccessibilityService | `BIND_ACCESSIBILITY_SERVICE` | 设置 → 无障碍 → 已下载服务            |
+| DeviceAdmin          | `BIND_DEVICE_ADMIN`          | 跳 `ACTION_ADD_DEVICE_ADMIN` 引导   |
+| UsageStatsManager    | `PACKAGE_USAGE_STATS`        | 跳 `ACTION_USAGE_ACCESS_SETTINGS`  |
+| LocationManager      | `ACCESS_FINE_LOCATION` 等     | 运行时申请 + 后台定位引导                   |
+
+> **无障碍授权的两条路径**:①标准路径 —— 系统「设置 → 无障碍 → 已下载服务」勾选;②受控端 UI「一键开启」,仅在 Shizuku 可用时通过直写 `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES` 并触发配置变更广播生效,同时关闭触摸探索。早期实现的**无障碍快捷方式开关已删除**(开启快捷方式会顺带打开触摸探索,导致"屏幕失控")。
+>
+> **通知访问权限已不再需要**:`ControlledNotificationListenerService`(通知内容监听 + ADB 冗余)及其权限声明、遥测字段、能力位已整体下线。现存的任务栏通知是下行下发 + 点击签收(`ReminderNotificationCenter`),不依赖通知访问。
 
 ### 9.3 Shizuku 授权
 
@@ -851,22 +854,22 @@ class ConfigStore(context: Context) {
 
 > 账户实际限制以控制台显示为准(免费层默认值,可能与官方文档不同,以实测数据为准):
 
-| 资源 | 实测限制 | 单位 | 说明 |
-| --- | --- | --- | --- |
-| 总连接数 | **30** | 个 | 含主控 + 全部被控,24×7 全在线最多 29 台被控 |
-| 存储 | **500** | MB | 离线消息 + retain 消息 + 持久会话累积 |
-| 请求数 | **36000** | 次/小时 | 约 10 req/s,平均峰值约 36000/3600 |
-| 下次重置 | 每小时整点 | | 请求数按小时滚动 |
+| 资源   | 实测限制      | 单位   | 说明                           |
+| ---- | --------- | ---- | ---------------------------- |
+| 总连接数 | **30**    | 个    | 含主控 + 全部被控,24×7 全在线最多 29 台被控 |
+| 存储   | **500**   | MB   | 离线消息 + retain 消息 + 持久会话累积    |
+| 请求数  | **36000** | 次/小时 | 约 10 req/s,平均峰值约 36000/3600  |
+| 下次重置 | 每小时整点     |      | 请求数按小时滚动                     |
 
 #### 10.2.2 本方案容量测算(基于 30 连接限制)
 
-| 资源 | 测算 | 是否够用 | 备注 |
-| --- | --- | --- | --- |
-| **连接数** | 1 主控 + 29 被控 24×7 = 30 连接 | ✅ 顶满 | 不可超 30,超过会被拒绝新连接 |
-| **session 分钟数** | 29 被控 + 1 主控 全在线 = 129.6 万分钟/月 | ⚠️ 超免费 100 万 | 超出部分约 ¥2.4/月(¥8/百万分钟),约 23 台 24×7 = 100 万刚好免费 |
-| **存储** | 主控离线时,被控所有 QoS 1 上报堆积;每条 ~200B | ⚠️ 需调优 | 主控离线 1 天 ≈ 43 MB,1 周 ≈ 300 MB,接近上限 |
-| **请求数(总量)** | 30 台 × 5 条/分钟 = 9000/小时 | ✅ 余量充足 | 远低于 36000 |
-| **请求数(峰值)** | 整点 USAGE 集中触发,30 台 × 1 条 = 30 req/s | ⚠️ 错峰处理 | 见下"上报错峰策略" |
+| 资源              | 测算                                  | 是否够用         | 备注                                            |
+| --------------- | ----------------------------------- | ------------ | --------------------------------------------- |
+| **连接数**         | 1 主控 + 29 被控 24×7 = 30 连接           | ✅ 顶满         | 不可超 30,超过会被拒绝新连接                              |
+| **session 分钟数** | 29 被控 + 1 主控 全在线 = 129.6 万分钟/月      | ⚠️ 超免费 100 万 | 超出部分约 ¥2.4/月(¥8/百万分钟),约 23 台 24×7 = 100 万刚好免费 |
+| **存储**          | 主控离线时,被控所有 QoS 1 上报堆积;每条 ~200B      | ⚠️ 需调优       | 主控离线 1 天 ≈ 43 MB,1 周 ≈ 300 MB,接近上限            |
+| **请求数(总量)**     | 30 台 × 5 条/分钟 = 9000/小时             | ✅ 余量充足       | 远低于 36000                                     |
+| **请求数(峰值)**     | 整点 USAGE 集中触发,30 台 × 1 条 = 30 req/s | ⚠️ 错峰处理      | 见下"上报错峰策略"                                    |
 
 #### 10.2.3 缓解策略(必须实现)
 
@@ -875,6 +878,7 @@ class ConfigStore(context: Context) {
 3. **message TTL**:EMQX 控制台配置消息保留期 7 天,过期自动清理
 4. **主控端尽量在线**:若主控离线 > 24h,Broker 缓存压力陡增,可触发告警
 5. **USAGE 上报错峰**:30 台设备整点同时上报会瞬间打 30 req/s。改为按 `deviceId` hash 到整点内不同分钟:
+   
    ```kotlin
    // 被控端整点上报错峰:hash(deviceId) % 60 = 偏移分钟
    val offsetMin = abs(deviceId.hashCode()) % 60
@@ -885,11 +889,11 @@ class ConfigStore(context: Context) {
 
 #### 10.2.4 容量超限时的扩展路径
 
-| 限制 | 接近上限时 | 解决方案 |
-| --- | --- | --- |
-| 连接数 > 30 | 设备数增长 | 升级 Dedicated Flex($234/月起,1000+ 连接) / 自建 EMQX 开源版 |
-| 存储 > 500 MB | 主控长期离线 | 升级 / 主控改双活 / 降低持久化级别(部分 topic 改 QoS 0) |
-| 请求数 > 36000/小时 | 设备 × 频率超限 | 降低非关键 topic 上报频率 / 错峰更细化 |
+| 限制             | 接近上限时     | 解决方案                                              |
+| -------------- | --------- | ------------------------------------------------- |
+| 连接数 > 30       | 设备数增长     | 升级 Dedicated Flex($234/月起,1000+ 连接) / 自建 EMQX 开源版 |
+| 存储 > 500 MB    | 主控长期离线    | 升级 / 主控改双活 / 降低持久化级别(部分 topic 改 QoS 0)            |
+| 请求数 > 36000/小时 | 设备 × 频率超限 | 降低非关键 topic 上报频率 / 错峰更细化                          |
 
 #### 10.2.5 极限场景
 
@@ -910,21 +914,21 @@ EMQX Serverless 单消息 **1 MB 上限**,截屏 PNG(1080p 约 2-4 MB)、APK 安
 
 #### 10.4.1 端点
 
-| 项 | 值 |
-| --- | --- |
+| 项        | 值                                                                   |
+| -------- | ------------------------------------------------------------------- |
 | Endpoint | `https://696e933486bc331658bce6378aaceaea.r2.cloudflarestorage.com` |
-| Bucket | `slss-boby` |
-| 协议 | S3 API(用 AWS S3 SDK 直连) |
-| Region | `auto`(R2 全球边缘) |
+| Bucket   | `slss-boby`                                                         |
+| 协议       | S3 API(用 AWS S3 SDK 直连)                                             |
+| Region   | `auto`(R2 全球边缘)                                                     |
 
 #### 10.4.2 免费额度(永久)
 
-| 资源 | 免费额度 | 本方案需求 | 是否够用 |
-| --- | --- | --- | --- |
-| 存储 | 10 GB / 月 | 截屏 30 设备 × 10 张/天 × 2 MB × 30 天 ≈ 18 GB(保留 7 天 = 4.2 GB) | ✅ 配合生命周期清理 7 天后删除 |
-| Class A 写(PutObject 等) | 100 万 / 月 | 30 设备 × 10 次/天 × 30 = 9000 | ✅ 远低于上限 |
-| Class B 读(GetObject 等) | 1000 万 / 月 | 主控按需拉取,估算 5 万/月 | ✅ 余量充足 |
-| Egress | **永久免费** | 主控拉取截屏,每张 2 MB | ✅ 这是 R2 最大优势 |
+| 资源                     | 免费额度       | 本方案需求                                                    | 是否够用              |
+| ---------------------- | ---------- | -------------------------------------------------------- | ----------------- |
+| 存储                     | 10 GB / 月  | 截屏 30 设备 × 10 张/天 × 2 MB × 30 天 ≈ 18 GB(保留 7 天 = 4.2 GB) | ✅ 配合生命周期清理 7 天后删除 |
+| Class A 写(PutObject 等) | 100 万 / 月  | 30 设备 × 10 次/天 × 30 = 9000                               | ✅ 远低于上限           |
+| Class B 读(GetObject 等) | 1000 万 / 月 | 主控按需拉取,估算 5 万/月                                          | ✅ 余量充足            |
+| Egress                 | **永久免费**   | 主控拉取截屏,每张 2 MB                                           | ✅ 这是 R2 最大优势      |
 
 > 关键:R2 **egress 永久免费**,主控端任意频率拉截屏都不产生流量费用。对比阿里云 OSS 流量费 ¥0.5/GB,30 设备每天 10 张截屏 = 600 MB/天 = 18 GB/月 = ¥9/月,R2 直接省掉。
 
@@ -959,23 +963,23 @@ class ScreenshotUploader(
 
 #### 10.4.5 R2 配置项
 
-| 配置 | 推荐值 | 原因 |
-| --- | --- | --- |
-| 公共访问 | 开启 read | 主控端直接 GET URL,无需 presign |
-| CORS | 允许主控端域名 | 主控若在浏览器/Web 控制台预览,需 CORS |
-| 生命周期规则 | 7 天后自动 Delete | 防存储无限增长,7 天足够排查历史 |
-| 存储类 | Standard | 截屏频繁读,不走 Infrequent Access(避免 retrieval 费用) |
-| 加密 | 服务端 SSE-S3 | 透明加密,客户端无感 |
+| 配置     | 推荐值           | 原因                                          |
+| ------ | ------------- | ------------------------------------------- |
+| 公共访问   | 开启 read       | 主控端直接 GET URL,无需 presign                    |
+| CORS   | 允许主控端域名       | 主控若在浏览器/Web 控制台预览,需 CORS                    |
+| 生命周期规则 | 7 天后自动 Delete | 防存储无限增长,7 天足够排查历史                           |
+| 存储类    | Standard      | 截屏频繁读,不走 Infrequent Access(避免 retrieval 费用) |
+| 加密     | 服务端 SSE-S3    | 透明加密,客户端无感                                  |
 
 #### 10.4.6 适用场景清单
 
-| 场景 | MQTT 传什么 | R2 传什么 |
-| --- | --- | --- |
-| 截屏 | screenshot URL + sha256 | PNG 文件 |
-| 录屏 | video URL + duration | MP4 文件 |
-| 文件传输 | file_url + meta(大小/校验) | 文件本身 |
-| APK 自更新 | patch_url + checksum | APK / 差分包 |
-| 应用清单上报 | snapshot URL(包列表太大时) | JSON 大对象 |
+| 场景      | MQTT 传什么                | R2 传什么    |
+| ------- | ----------------------- | --------- |
+| 截屏      | screenshot URL + sha256 | PNG 文件    |
+| 录屏      | video URL + duration    | MP4 文件    |
+| 文件传输    | file_url + meta(大小/校验)  | 文件本身      |
+| APK 自更新 | patch_url + checksum    | APK / 差分包 |
+| 应用清单上报  | snapshot URL(包列表太大时)    | JSON 大对象  |
 
 > 原则:**小于 100 KB** 走 MQTT 直接传(快);**大于 100 KB** 一律走 R2,MQTT 只传 URL。截屏、APK、录屏都在后者范围。
 
@@ -996,53 +1000,118 @@ class ScreenshotUploader(
 
 ### 11.1 双通道更新
 
-| 通道 | 适用 | 实现 |
-| --- | --- | --- |
-| Play App Update | 上架 Play Store 的版本 | Google Play 的 `AppUpdateManager`,支持 immediate(全屏强制)/ flexible(后台下载)两种模式 |
-| 自建更新服务器 | 自分发 APK(企业内部) | HTTPS 检查版本 → 差分包下载 → 应用 |
+| 通道              | 适用                | 实现                                                                      |
+| --------------- | ----------------- | ----------------------------------------------------------------------- |
+| Play App Update | 上架 Play Store 的版本 | Google Play 的 `AppUpdateManager`,支持 immediate(全屏强制)/ flexible(后台下载)两种模式(仅骨架,国行无 GMS) |
+| 自建更新服务器         | 自分发 APK(企业内部)     | HTTPS 检查版本 → 多源竞速下载 → sha256 校验 → Shizuku 三步会话流静默安装(已落地)     |
+
+> OTA 端到端链路(下载源编排 / 触发源 / 安装流程)见 11.2~11.4;签名一致性前提见 11.5;CI 发布流水线见 11.6。
 
 ### 11.2 自建更新服务器协议
 
+**检查(受控端 → 后端):**
+
 ```http
-GET https://api.xxx.com/update/check?deviceId=d-a001&currentVersion=1.2.3
+GET https://api.xxx.com/update/check?deviceId=d-a001&currentVersionCode=15&currentVersionName=1.4.2&channel=stable
 ```
 
-响应:
+`deviceId` / `serverUrl` 取自配对时持久化的 `AppConfig`;未配对或 `serverUrl` 为空时静默跳过(更新通道关闭)。请求 URL、HTTP 状态、响应体片段写入 `cache/ota_diag.txt`(`adb run-as` 可读)便于排障。
+
+**响应(`UpdateCheckResponse`):**
 
 ```json
 {
-  "latestVersion": "1.3.0",
+  "hasUpdate": true,
+  "latestVersionCode": 16,
+  "latestVersionName": "1.5.0",
+  "fullApkUrl": "https://github.com/<org>/<repo>/releases/download/nightly/controlled-release.apk",
+  "patchUrl": null,
+  "sha256": "<hex>",
   "forceUpdate": false,
-  "fullApkUrl": "https://.../app-1.3.0.apk",
-  "patchUrl": "https://.../app-1.2.3-to-1.3.0.patch",
-  "checksum": "sha256:...",
-  "releaseNote": "1. 新增 Shizuku 桥接\n2. 修复 ..."
+  "releaseNotes": "Commit abc1234"
 }
 ```
 
-被控端:
-1. 优先用差分包(基于 `bsdiff`,体积小,需配套历史 APK 缓存)
+**注册版本(CI → 后端,`POST /api/updates/publish`):** 携带 `X-Admin-Token`,载荷含 `versionCode` / `versionName` / `channel` / `priority` / `fullApkUrl` / `sha256` / `sizeBytes` / `releaseNotes`。后端落版本清单并向在线设备广播 `update_available`。
+
+**安装结果上报:** `POST /update/report`,载荷含 `versionCode` / `success` / `errorMsg`(截断 300 字符)/ `durationMs` / `timestamp`,失败仅记日志不影响主流程。
+
+被控端流程:
+
+1. 差分包优先(仅在 bsdiff 引擎可用时尝试;当前 `isBsdiffSupported()` 恒 `false`,直接短路全量包,避免重复下载白耗流量)
 2. 失败回退全量 APK
-3. `sha256` 校验通过后通过 Shizuku 调用 `pm install` 静默安装(需 Shizuku 可用),否则弹安装确认
+3. `sha256` 比对 `sha256:` 前缀清单,不匹配则回退 / 报错
+4. Shizuku 可用 → 三步会话流静默安装(见 11.4);不可用 → `FileProvider` 拉起系统安装器(需一次「安装未知应用」授权)
 
-### 11.3 主控端远程触发更新
+### 11.3 触发源
 
-主控端可下发 `UPDATE_NOTIFY` 命令,被控端收到后立即检查并应用更新,适合紧急修复。
+| 来源             | 路径                                            | 说明                              |
+| -------------- | --------------------------------------------- | ------------------------------- |
+| 后端 push        | `CommandHandler` 收 `update_available` → `UpdateRunner.trigger("push")` | 紧急修复走这条             |
+| App 内按钮        | `trigger("manual")`                            | 「检查更新」卡片                   |
+| 周期巡检          | `startPeriodicChecks()`                        | 启动后先延迟 30 分钟,之后每 6h 一次 |
+
+三者统一进 `runOnce(source)`,由 `Mutex` 串行化;`periodic` 额外做 6h 节流。**注意:`runOnce` 必须在 `finally` 里 `mutex.unlock()`** —— 早期实现缺这一步,首次触发后所有后续触发(手动按钮 / 周期巡检触发的更新检查)都被 `tryLock` 静默吞掉。
 
 ### 11.4 更新通道抽象
 
 ```kotlin
 interface UpdateChannel {
-    suspend fun check(): UpdateInfo?
-    suspend fun download(info: UpdateInfo, onProgress: (Int) -> Unit): File
+    suspend fun check(): UpdateCheckResponse?
+    suspend fun download(info: UpdateCheckResponse, onProgress: (Int) -> Unit): File
     suspend fun install(apk: File): InstallResult
 }
 
-class PlayAppUpdateChannel(...) : UpdateChannel { /* AppUpdateManager */
-class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
+class PlayAppUpdateChannel(...) : UpdateChannel   /* AppUpdateManager(未启用) */
+class SelfHostedUpdateChannel(...) : UpdateChannel /* 自建通道(主路径) */
 ```
 
-启动时按分发渠道选实现(通过 BuildConfig 标识 Play / SelfHost),两条通道并存。
+**下载源编排(`GitHubFastDownloader`)** —— 4 个源并发 HEAD 探测,谁先返回 `200 + Content-Length>0` 谁排首位:
+
+| 序 | 源                                    | 客户端             | 说明                                       |
+| - | ------------------------------------- | ---------------- | ---------------------------------------- |
+| 0 | `{serverBase}/update/apk?url=<encoded>`   | `proxyClient`    | 自有后端中转,置顶参与竞速(境外后端拉 GitHub 稳定,设备→后端链路已被 check 长期验证) |
+| 1 | 原始 URL 直连                           | 优选 IP `client`    | 自定义 `okhttp3.Dns` 命中 GitHub520 优选 IP,TLS/SNI 仍按原域名校验  |
+| 2-4 | `ghfast.top/` / `gh-proxy.com/` / `ghproxy.net/` 前缀 | `proxyClient` | 公共加速前缀                                |
+
+- 全部源同时发 HEAD,失败/超时的源 `awaitCancellation()` 挂起不参与 `select`;30s 内全挂则回退为按原顺序串行尝试。
+- **赢家传输中断要换源重试**:`HEAD` 探测能通不代表能传完。`EOFException` / `StreamResetException CANCEL` 这类大文件被中间设备掐断很常见;赢家失败后删 `.part` 残片继续下一个源,而不是一次定生死。
+- `isGitHubUrl` **必须按 host 白名单精确判断**(`github.com` / `*.githubusercontent.com`),不可子串匹配:后端会把直链改写成中转链接,query 里的 `github.com` 字样会让子串匹配把中转链接误送进加速器再套 ghproxy 前缀 → 403。
+
+**三步会话流静默安装(`ShizukuExecutor.installApkStreamed`)**:
+
+```
+1. pm install-create -r                       → 解析 "Success: created install session [NNN]"
+2. pm install-write -S <size> <id> base.apk -  → 由 App 进程经 stdin 流式喂包
+3. pm install-commit <id>                     → 提交安装
+```
+
+两个必须遵守的实现约束:
+
+- **不能用 `pm install -r <path>`**:APK 在本应用私有缓存目录(0700,仅自身可读),Shizuku 执行进程是 shell uid,无权读路径 → 必然 `Permission denied`。流式安装由 App 进程读自己的文件经 stdin 传给 Shizuku 侧 `pm`,绕开文件权限。
+- **写 stdin / 读 stdout / 读 stderr 必须三个协程并发**,写完立即 `close` 发 EOF(`pm` 收到 EOF 才提交安装),不等读完。旧代码顺序执行会因管道缓冲(~64KB)填满而互相死锁:写不进去 → 不再读 stdout → 写方也阻塞 → `pm` 异常退出 `exit=1` 且无任何输出。另需循环读 `ParcelFileDescriptor` 到 EOF(`readText` 内部缓冲接不住 `pm` 全部输出),失败信息同时含 stdout 与 stderr。
+
+### 11.5 签名一致性(OTA 覆盖安装的硬前提)
+
+GitHub Actions runner 每次构建都会随机生成 `debug.keystore`,导致 CI 各版本之间、CI 与本地构建之间签名互不相同,覆盖安装必报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。该问题此前从未暴露,是因为 OTA 从未成功走到安装阶段(前面几步都在失败)。
+
+现方案:
+
+- `keystore/debug.keystore` **入库**并在 `signingConfigs.debug` 固定指向它,本地与 CI 签名统一;
+- `release` 构建类型 `signingConfig = signingConfigs.getByName("debug")` + R8/资源压缩;
+- CI 由 `assembleDebug` 切到 `assembleRelease`:82MB 大包经后端中转会把 fly 免费机 256MB 内存打爆 OOM,R8 后 ~11MB;
+- `proguard-rules.pro` 补 R8 缺失规则(`netty-tcnative` / JNDI / log4j / jetty-alpn 等 JVM 可选依赖 `-dontwarn` 抑制)。
+
+> 个人项目取舍:正式对外发布请替换为自有 release 密钥,不要沿用入库的 debug 密钥。
+
+### 11.6 CI 发布流水线(`.github/workflows/ota.yml`)
+
+| 触发         | Release tag | 版本名             | 备注                       |
+| ---------- | --------- | --------------- | ------------------------ |
+| 推 tag `v*` | `v1.0.1`   | tag 名(去 `v`)      | 命名发布,自动生成 release notes |
+| 推 `main`   | `nightly`  | `nightly-{短sha}` | 滚动发布,先 `gh release delete nightly` 再传新包 |
+
+`versionCode` 取 `git rev-list --count HEAD`(提交计数,单调递增),`versionName` 随触发类型。流程:checkout(fetch-depth 0)→ JDK 17 → Android SDK → `assembleRelease -PversionCode -PversionName` → sha256 + 体积 → 上传 Release → `POST {ADB_BACKEND_URL}/api/updates/publish`(非 200 即 `exit 1`)。仓库 Secrets:`ADB_BACKEND_URL`、`ADB_PM_TOKEN`(与后端同名环境变量一致)。`gradlew` 需保留可执行位,否则 runner 上 `exit 126`。
 
 ---
 
@@ -1075,28 +1144,35 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 │       ├── schedule/                    (cron + Worker)
 │       ├── update/                      (PlayAppUpdateChannel / SelfHostUpdateChannel)
 │       └── ui/                          (Compose screens)
-└── controlled/                          ⏳ 待开发
-    └── src/main/kotlin/com/adbcontrol/controlled/
-        ├── ControlledApp.kt
-        ├── di/
-        ├── data/                        (Room: local_results/fence/pending_messages)
-        ├── net/                         (MQTT Client + 订阅 + 验签)
-        ├── config/                      (QR 配对 + EncryptedFile + SessionKey)
-        ├── storage/                     (R2StorageClient:截屏/文件上传,HTTP 旁路)
-        ├── executor/                    (ShizukuExecutor / RootExecutor / AccessibilityExecutor / NormalExecutor)
-        ├── telemetry/                   (StatusReporter / LocationReporter / ActivityReporter / HealthReporter)
-        ├── service/
-        │   ├── ControlledService.kt      (常驻前台 Service + 保活)
-        │   ├── BootReceiver.kt           (开机自启)
-        │   ├── HeartbeatGuardWorker.kt   (WorkManager 周期兜底)
-        │   └── UsageStatsWorker.kt       (整点上传)
-        ├── accessibility/
-        │   └── AdbControlAccessibilityService.kt  (窗口监听 / 手势 / 截屏 / UI 拦截)
-        ├── admin/
-        │   └── AdbControlDeviceAdminReceiver.kt   (锁屏 / 防卸载)
-        ├── notification/
-        │   └── AdbControlNotificationListener.kt  (通知监听 + ADB 冗余)
-        └── update/                      (本地 UpdateChannel 实现)
+└── controlled/                          ✅ 已实现(下表为实际结构)
+    ├── src/main/kotlin/com/adbcontrol/controlled/
+    │   ├── ControlledApp.kt             (Application + Hilt + 版本号读取)
+    │   ├── di/AppModule.kt              (OkHttp / Json / WorkManager / ConfigStore)
+    │   ├── net/
+    │   │   ├── MqttManager.kt           (Paho 客户端 + HMAC 验签 + 息屏 transient WakeLock)
+    │   │   └── CommandHandler.kt        (指令分发 + SCREENSHOT 回传 + update_available → UpdateRunner)
+    │   ├── config/                      (ConfigStore: EncryptedFile + SessionKey + R2 凭证)
+    │   ├── storage/R2StorageClient.kt   (截屏/应用图标上传,AWS S3 SDK 走 R2 兼容端点)
+    │   ├── executor/                    (ShizukuExecutor / RootExecutor / AccessibilityExecutor /
+    │   │                                 DeviceAdminExecutor / NormalExecutor 责任链)
+    │   ├── telemetry/                   (StatusReporter / LocationReporter / ActivityReporter /
+    │   │                                 HealthReporter / UsageReporter)
+    │   ├── apptime/AppTimeController.kt  (累计时长配额 + 禁用时间窗)
+    │   ├── service/
+    │   │   ├── ControlledService.kt      (常驻前台 Service + 保活)
+    │   │   ├── BootReceiver.kt           (开机自启)
+    │   │   └── HeartbeatGuardWorker.kt   (WorkManager 周期兜底)
+    │   ├── accessibility/ControlledAccessibilityService.kt  (窗口监听 / 手势 / UI 拦截)
+    │   ├── admin/ControlledDeviceAdminReceiver.kt           (锁屏 / 防卸载)
+    │   ├── notification/ReminderNotificationCenter.kt       (任务栏通知下发 + 点击签收)
+    │   ├── oem/                         (MiuiAdapter / OemBatterySettings / OemAccessibilityGuard)
+    │   ├── ui/                          (Compose SetupScreen + UpdateCard + 能力自检)
+    │   └── update/                      (UpdateChannel / SelfHostedUpdateChannel /
+    │                                     GitHubFastDownloader / UpdateRunner / PlayAppUpdateChannel)
+    ├── build.gradle.kts                 (R8 release + 固定 debug 签名)
+    └── proguard-rules.pro
+├── keystore/debug.keystore              ✅ 入库(CI 与本地签名统一,OTA 覆盖安装前提)
+└── .github/workflows/ota.yml            ✅ 推 tag v* / main 双触发发布流水线
 ```
 
 ---
@@ -1135,9 +1211,9 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 - [x] controlled:常驻 Foreground Service + 11 层保活(通知/电池白名单/BootReceiver/HeartbeatGuardWorker)
 - [x] controlled:Command Executor(Shizuku 主/Root 增强/Accessibility 兼容/Normal 兜底 + 注入防护白名单)
 - [x] controlled:遥测引擎(Status/Location/Activity/Usage/Health 错峰上报)
-- [x] controlled:五大服务集成(Accessibility/DeviceAdmin/UsageStats/Location/Notification)
-- [x] controlled:QR 配对 + EncryptedFile + SessionKey 验签(缺失签名即拒绝)
-- [x] controlled:软件更新(Play App Update + 自建差分包通道)
+- [x] controlled:服务集成(Accessibility / DeviceAdmin / UsageStats / Location;通知内容监听已下线)
+- [x] controlled:QR 配对 + EncryptedFile + SessionKey 验签(缺失签名即拒绝;认证失败自动清配对)
+- [x] controlled:软件更新(自建通道已完整落地:多源竞速下载 + 三步会话流静默安装 + `/update/report` 上报;Play App Update 仅骨架)
 - [x] controlled:小米 MIUI 适配(`MiuiAdapter` USB 安全调试/应用锁/神隐/通知渠道/锁屏广播 + `OemBatterySettings` 自启/神隐跳转 + `OemAccessibilityGuard` 7 天自动关检测)
 - [x] controller:多设备管理 + 能力雷达(Flow + Compose)
 - [x] controller:cron 调度 + 任务双存(AlarmManager 对账 + 稳定 requestCode)
@@ -1152,13 +1228,13 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 
 **真实环境:**
 
-| 组件 | 部署位置 | 地址 |
-| --- | --- | --- |
-| 后端 | Fly.io(sin 区) | https://adbcontrol-backend.fly.dev |
-| Web 管理端 | Cloudflare Workers 静态资产(wrangler.jsonc) | https://baby.slss.top |
-| MySQL | SQLPub | mysql6.sqlpub.com:3311/slss12 |
-| MQTT | EMQX Cloud Serverless(免费层) | o8cc1111.ala.cn-hangzhou.emqxsl.cn:8883 |
-| 真机 | 小米 14(Android 14,国行无 GMS) | deviceId 形如 dev_xxx |
+| 组件      | 部署位置                                    | 地址                                      |
+| ------- | --------------------------------------- | --------------------------------------- |
+| 后端      | Fly.io(sin 区)                           | https://adbcontrol-backend.fly.dev      |
+| Web 管理端 | Cloudflare Workers 静态资产(wrangler.jsonc) | https://baby.slss.top                   |
+| MySQL   | SQLPub                                  | mysql6.sqlpub.com:3311/slss12           |
+| MQTT    | EMQX Cloud Serverless(免费层)              | o8cc1111.ala.cn-hangzhou.emqxsl.cn:8883 |
+| 真机      | 小米 14(Android 14,国行无 GMS)               | deviceId 形如 dev_xxx                     |
 
 **CI/CD 已跑通:** 后端 push main → GitHub Actions(fly-deploy.yml)→ Fly 远程构建部署;Web push main → Cloudflare 侧自动构建;git 通道被墙时可走 GitHub API 提交(实测可用)。另有 set-secrets.yml 手动工作流,本地无 flyctl 时经 Actions 注入 Fly secrets。
 
@@ -1185,10 +1261,31 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 - [x] 上报提速:Status 兜底 5→2 分钟/变化检测 30→10 秒、Location 15→5 分钟、Health 30→10 分钟;Web 首屏 bundle 拆 chunk(主入口 1.25MB → 60KB,element-plus 独立长缓存)
 - [x] 协议对拍测试:ReminderPayload/ReminderAck 序列化往返 + DeviceCommandBridge 新映射单测 + AppTimeWindows 窗口判定 5 例
 
+**2026-08-23 ~ 08-26 升级(OTA 闭环 + 截图回传 + 发布流水线,详见 11.4~11.6):**
+
+**功能**
+
+- [x] OTA 端到端闭环:`AppConfig.serverUrl` 接线 → `UpdateRunner`(push 触发 + 6h 巡检 + App 内手动按钮,`Mutex` 串行化)→ `SelfHostedUpdateChannel`(check / download / install / report)→ 后端 `/update/report` 上报安装结果;App 内新增「检查更新」卡片(UpdateCard)
+- [x] 下载源编排(`GitHubFastDownloader`):自有后端中转源置顶 + 直连 GitHub520 优选 IP + 3 个公共代理并发 HEAD 竞速,赢家传输中断自动换源续试(旧实现串行回退,且 `HEAD` 探通即认定该源可用,大文件传一半被掐就整体失败)
+- [x] 静默安装改三步会话流:`pm install-create -r` / `pm install-write -S <id> -` / `pm install-commit <id>`,App 进程经 stdin 喂自己的私有 APK,绕开 `pm install -r <path>` 必然 Permission denied 的死结
+- [x] 截图回传闭环:`SCREENSHOT` 指令在 `CommandHandler` 补齐回传 —— R2(publicRead)上传 `screenshots/{deviceId}/{ts}.png` 回 `screenshotUrl=`;无可用 R2 降采样 ≤720px JPEG 回 `screenshotBase64=`(EMQX Serverless 单消息 1MB 上限);原执行器只把 PNG 写本地、URL 从未回传
+- [x] 息屏 MQTT 保活:`MqttManager` 在息屏瞬间临时持有 `PARTIAL_WAKE_LOCK`(15s / 连接 30s)
+- [x] 用量上报补应用名 + launcher 图标:`UsageReporter` 取 `getApplicationLabel`,前 15 个应用图标(96px)按 `icons/{pkg}.png` 上传 R2 并缓存,Web 可直接展示
+- [x] 发布流水线:`ota.yml` 支持推 `tag v*` 命名发布 + 推 `main` 滚动 `nightly-{短sha}`(先删旧 tag 再传);`versionCode` 取 `git rev-list --count HEAD` 保证单调递增
+- [x] CI 切 R8 release 包 + 固定调试签名入库:82MB debug 包经后端中转把 fly 免费机 256MB 打爆 OOM → 切 `assembleRelease`(~11MB);`keystore/debug.keystore` 入库(此前 runner 每次随机生成 debug key,各版本签名互不相同,覆盖安装必报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` —— 该问题此前从未暴露是因为 OTA 从未走到安装阶段)
+- [x] `gradlew` 补可执行位(否则 runner 上 `exit 126`);`proguard-rules.pro` 补 R8 missing rules
+
+**删除 / 简化**
+
+- [x] 删除通知监控功能:`ControlledNotificationListenerService`(通知内容监听 + ADB 冗余)连同 Manifest 权限、Telemetry 字段、能力位、UI 项整体移除,不再需要「通知访问」权限
+- [x] 删除无障碍快捷方式开关(`AccessibilityShortcutController`),保留系统标准无障碍授权;一键开启改为 Shizuku 直写 `ENABLED_ACCESSIBILITY_SERVICES` 并同步关闭触摸探索(早期实现开快捷方式会顺带打开触摸探索,表现为"屏幕失控")
+- [x] 认证失败自动清配对:Web 删设备后受控端下次验签失败即回到未配对态
+
 **已知遗留(未修,按优先级):**
 
 - [ ] 被控端:凭证 7 天到期无自动续期(renew 已可用但无触发点)
-- [ ] 被控端:静默安装前缺 APK 签名/包名校验;截屏只写本地不回传(R2 上传链路未接线)
+- [ ] 被控端:静默安装前缺 APK 签名/包名校验(只校验 sha256,不校验包名/签名与已装包一致);bsdiff 差分引擎未集成(`isBsdiffSupported()` 恒 false,始终走全量包);`PlayAppUpdateChannel` 仅骨架
+- [ ] 受控端:入库的 `keystore/debug.keystore` 是个人项目取舍,正式发布须换自有 release 密钥
 - [ ] 后端:`notification_log` 表零写入(通知事件入错表);XFF 可伪造 + 登录限流可被用来锁死账号;sessionKey/MQTT 密码明文存 MySQL;`/update/report` 无界内存
 - [ ] EMQX 无 ACL(Serverless 限制),越权防护完全依赖 HMAC 验签
 - [ ] LWT retained 消息上线后不清除,新订阅者会收到过期"离线"
@@ -1199,11 +1296,12 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 ## 十五、UI 设计规范
 
 > 高保真原型见 [docs/ui/](docs/ui/):
+> 
 > - [01-dashboard.html](docs/ui/01-dashboard.html) — 主控端 Dashboard + 设备列表
 > - [02-device-detail.html](docs/ui/02-device-detail.html) — 主控端 设备详情 + 任务编辑
 > - [03-remote-control.html](docs/ui/03-remote-control.html) — 主控端 截屏查看 + 远程控制
 > - [04-controlled-setup.html](docs/ui/04-controlled-setup.html) — 被控端 配对 + 权限自检
->
+> 
 > 视觉参考:[docs/ui/assets/](docs/ui/assets/)(app icon / dashboard hero / 品牌主视觉)
 
 ### 15.1 设计方向
@@ -1269,22 +1367,22 @@ object AppShadows {
 
 ### 15.3 颜色语义
 
-| 颜色 | Hex | 用途 |
-| --- | --- | --- |
-| **青 cyan** | `#4FD1E0` | 主强调色,所有交互态/链接/活跃 tab/cron 表达式/雷达点 |
-| **品红 magenta** | `#FF5FAD` | 副强调色,与青色组合渐变用于按钮/状态点 |
-| **翠绿 emerald** | `#4ADE80` | 在线 / 成功 / 通过 / 已授权 |
-| **琥珀 amber** | `#FBBF24` | 警告 / 需关注 / 待授权 / 容量 70%+ |
-| **玫红 rose** | `#FF6B6B` | 错误 / 离线 LWT / 容量 90%+ / 危险操作(锁屏/重启/关机) |
-| **板岩 slate** | `#64748B` | 离线 / disabled / 次要元数据 |
+| 颜色             | Hex       | 用途                                     |
+| -------------- | --------- | -------------------------------------- |
+| **青 cyan**     | `#4FD1E0` | 主强调色,所有交互态/链接/活跃 tab/cron 表达式/雷达点      |
+| **品红 magenta** | `#FF5FAD` | 副强调色,与青色组合渐变用于按钮/状态点                   |
+| **翠绿 emerald** | `#4ADE80` | 在线 / 成功 / 通过 / 已授权                     |
+| **琥珀 amber**   | `#FBBF24` | 警告 / 需关注 / 待授权 / 容量 70%+               |
+| **玫红 rose**    | `#FF6B6B` | 错误 / 离线 LWT / 容量 90%+ / 危险操作(锁屏/重启/关机) |
+| **板岩 slate**   | `#64748B` | 离线 / disabled / 次要元数据                  |
 
 ### 15.4 字体规范
 
-| 字体 | 用途 | Compose 实现 |
-| --- | --- | --- |
-| **Bricolage Grotesque** | 大标题/数字/品牌字(避免老套 Inter) | `FontFamily` 引入,字重 600 |
-| **Manrope** | 正文/UI 文字(圆润但非默认字体) | 字重 300-700 |
-| **JetBrains Mono** | 设备 ID / cron / 坐标 / shell 输出 / 时间戳 | 等宽,字重 400-500 |
+| 字体                      | 用途                                 | Compose 实现             |
+| ----------------------- | ---------------------------------- | ---------------------- |
+| **Bricolage Grotesque** | 大标题/数字/品牌字(避免老套 Inter)             | `FontFamily` 引入,字重 600 |
+| **Manrope**             | 正文/UI 文字(圆润但非默认字体)                 | 字重 300-700             |
+| **JetBrains Mono**      | 设备 ID / cron / 坐标 / shell 输出 / 时间戳 | 等宽,字重 400-500          |
 
 > 三字组合可避开"系统默认 + Inter"的 AI 模板感,显得有选择。
 
@@ -1360,6 +1458,7 @@ fun PrimaryButton(text: String, onClick: () -> Unit, enabled: Boolean = true) {
 #### 15.6.4 能力雷达 `CapabilityRadar`
 
 六边形雷达,SVG 由 Compose `Canvas` 绘制:
+
 - 六轴:MQTT / SHIZUKU / ACCESS / ADMIN / USAGE / NOTI
 - 数据多边形:青→品红渐变填充 + 描边
 - 顶点:小圆点
@@ -1398,13 +1497,13 @@ fun MeterBar(label: String, value: Float, max: Float, threshold: Float = 0.7f) {
 
 ### 15.7 屏幕清单与对应文件
 
-| 屏幕 | 文件 | 关键组件 |
-| --- | --- | --- |
-| 主控 Dashboard | [01-dashboard.html](docs/ui/01-dashboard.html) | hero + 统计四卡 + 设备网格 + 任务流时间线 + 容量计 |
-| 主控 设备详情 | [02-device-detail.html](docs/ui/02-device-detail.html) | 设备 hero + 遥测面板 + 能力雷达大图 + 应用使用排行 + 位置卡 |
-| 主控 任务编辑 | (同 02) | 规则类型切换 + cron 5 字段构建器 + 包名输入 + 执行路径偏好开关 + 任务列表 |
-| 主控 远程控制 | [03-remote-control.html](docs/ui/03-remote-control.html) | 设备屏幕模拟框 + 按键九宫格 + 手势区 + shell + 链路状态 + 截屏缩略图 |
-| 被控端 配对 | [04-controlled-setup.html](docs/ui/04-controlled-setup.html) | 4 步 stepper + QR 扫描 + 凭证预览(掩码)+ 自检列表(MUST/OPT badge) |
+| 屏幕           | 文件                                                           | 关键组件                                                 |
+| ------------ | ------------------------------------------------------------ | ---------------------------------------------------- |
+| 主控 Dashboard | [01-dashboard.html](docs/ui/01-dashboard.html)               | hero + 统计四卡 + 设备网格 + 任务流时间线 + 容量计                    |
+| 主控 设备详情      | [02-device-detail.html](docs/ui/02-device-detail.html)       | 设备 hero + 遥测面板 + 能力雷达大图 + 应用使用排行 + 位置卡               |
+| 主控 任务编辑      | (同 02)                                                       | 规则类型切换 + cron 5 字段构建器 + 包名输入 + 执行路径偏好开关 + 任务列表       |
+| 主控 远程控制      | [03-remote-control.html](docs/ui/03-remote-control.html)     | 设备屏幕模拟框 + 按键九宫格 + 手势区 + shell + 链路状态 + 截屏缩略图         |
+| 被控端 配对       | [04-controlled-setup.html](docs/ui/04-controlled-setup.html) | 4 步 stepper + QR 扫描 + 凭证预览(掩码)+ 自检列表(MUST/OPT badge) |
 
 ### 15.8 交互细节约定
 
@@ -1432,16 +1531,16 @@ fun MeterBar(label: String, value: Float, max: Float, threshold: Float = 0.7f) {
 
 ### 15.11 与方案对齐的关键 UI 元素
 
-| 方案要素 | UI 体现 |
-| --- | --- |
-| EMQX 容量 30 连接 / 500MB / 36k/h | 侧栏容量计四条进度条 + 警报条 |
-| 错峰上报 `deviceId.hashCode() % 60` | 任务列表标注 `USAGE · 错峰 +12min` |
-| HMAC-SHA256 签名 | 远控面板链路状态显示"签名校验 ✓" |
-| QR 配对不直接含凭证 | 配对页只显示 `pairToken` 输入框 |
-| Shizuku 优先 / 无障碍兜底 | 设备能力雷达 + 任务编辑开关"优先 Shizuku" / "允许无障碍兜底" |
-| R2 截屏旁路 | 工具栏标注"截屏 2.1MB · R2" |
-| 三层幂等(LRU + UNIQUE KEY + ACK) | 不直接体现,但任务流时间线显示重试与去重后状态 |
-| 截屏 > 1MB 必走 HTTP 旁路 | 质量切换 LOW / HD / RAW 三档(LOW 走 MQTT 缩略图,HD/RAW 走 R2) |
-| 11 层保活 | 被控端启动 Agent 按钮 disabled 文案"需完成所有 MUST 项" |
-| foregroundServiceType | 状态卡显示 `connectedDevice|dataSync` |
-| MUST / OPT 权限等级 | 自检列表每项带 badge |
+| 方案要素                            | UI 体现                                              |
+| ------------------------------- | -------------------------------------------------- |
+| EMQX 容量 30 连接 / 500MB / 36k/h   | 侧栏容量计四条进度条 + 警报条                                   |
+| 错峰上报 `deviceId.hashCode() % 60` | 任务列表标注 `USAGE · 错峰 +12min`                         |
+| HMAC-SHA256 签名                  | 远控面板链路状态显示"签名校验 ✓"                                 |
+| QR 配对不直接含凭证                     | 配对页只显示 `pairToken` 输入框                             |
+| Shizuku 优先 / 无障碍兜底              | 设备能力雷达 + 任务编辑开关"优先 Shizuku" / "允许无障碍兜底"            |
+| R2 截屏旁路                         | 工具栏标注"截屏 2.1MB · R2"                               |
+| 三层幂等(LRU + UNIQUE KEY + ACK)    | 不直接体现,但任务流时间线显示重试与去重后状态                            |
+| 截屏 > 1MB 必走 HTTP 旁路             | 质量切换 LOW / HD / RAW 三档(LOW 走 MQTT 缩略图,HD/RAW 走 R2) |
+| 11 层保活                          | 被控端启动 Agent 按钮 disabled 文案"需完成所有 MUST 项"           |
+| foregroundServiceType           | 状态卡显示 `connectedDevice                             |
+| MUST / OPT 权限等级                 | 自检列表每项带 badge                                      |

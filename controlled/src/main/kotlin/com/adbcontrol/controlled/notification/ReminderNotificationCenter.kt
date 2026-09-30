@@ -97,7 +97,9 @@ class ReminderNotificationCenter @Inject constructor(
                     putExtra(EXTRA_NOTIFY_ID, notifyId)
                 }
                 val pi = PendingIntent.getBroadcast(
-                    context, REQUEST_CODE_BASE + index, intent,
+                    context,
+                    REQUEST_CODE_BASE + (envelopeId.hashCode() and 0x0FFFFFFF) * 2 + index,
+                    intent,
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
                 )
                 builder.addAction(0, label.ifBlank { "签收" }, pi)
