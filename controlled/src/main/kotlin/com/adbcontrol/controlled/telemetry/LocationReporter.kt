@@ -48,10 +48,12 @@ class LocationReporter(
         }
     }
 
-    /** 周期上报:取最近一次已知位置(被动),发 QoS 0。 */
+    /** 周期上报:取最近一次已知位置(被动),发 QoS 0(若检测到围栏事件则以 QoS 1 确保触达)。 */
     fun reportOnce(deviceId: String): Boolean {
         val loc = lastKnownLocation() ?: return false
-        return publish(deviceId, loc, provider = loc.provider ?: "unknown", fenceEvent = null, qos = 0)
+        val fence = checkFence(loc.latitude, loc.longitude)
+        val qos = if (fence != null) 1 else 0
+        return publish(deviceId, loc, provider = loc.provider ?: "unknown", fenceEvent = fence, qos = qos)
     }
 
     private fun publish(
@@ -130,11 +132,8 @@ class LocationReporter(
                     Location.distanceBetween(lastLat, lastLng, f.lat, f.lng, r)
                     r[0] <= f.radiusMeters
                 }
-                return when {
-                    inside && !wasInside -> "enter:${f.label}"
-                    !inside && wasInside -> "leave:${f.label}"
-                    else -> null
-                }
+                if (inside && !wasInside) return "enter:${f.label}"
+                if (!inside && wasInside) return "leave:${f.label}"
             }
         }
         return null

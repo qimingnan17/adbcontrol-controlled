@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    仅 debug 构建生效(覆盖 main 源集同名资源):额外信任"用户安装的 CA"。
+    本地全流程测试用自建 CA 给 EMQX 签发 8883 端口证书,把 CA 装进
+    模拟器用户凭据库后,ssl:// 连接才能通过系统默认信任校验。
+    生产(main 源集)仍只信任系统 CA,不受此文件影响。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

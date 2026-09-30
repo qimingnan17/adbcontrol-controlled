@@ -47,12 +47,9 @@ class ControlledAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        // Bug 6:系统中断当前所有操作(手势/节点遍历/截屏)。MIUI 因系统动画/权限弹窗频繁触发。
-        // 立即 unbind,避免后续 execute 调用已中断的服务实例 dispatchGesture/takeScreenshot 抛异常。
-        // 系统恢复时会再次调用 onServiceConnected 重新 bind。
-        // 注意:AccessibilityService.onInterrupt() 是 abstract,不能调用 super。
-        Log.w(TAG, "onInterrupt — unbind bridge")
-        runCatching { AccessibilityServiceBridge.unbind() }
+        // onInterrupt 仅表示辅助反馈被打断（如通知弹窗或TTS打断），Service 连接依然存活，严禁解绑 Bridge！
+        // 只有在 onDestroy() 或 onUnbind() 时才应注销 Bridge。
+        Log.w(TAG, "onInterrupt: accessibility feedback interrupted")
     }
 
     override fun onDestroy() {

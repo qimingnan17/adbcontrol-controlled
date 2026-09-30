@@ -100,9 +100,18 @@ class ControlledViewModel @Inject constructor(
             ).flattenToString()
 
             if (shizukuExecutor.isAvailable()) {
-                // Shizuku 直写:enabled_accessibility_services 用冒号分隔的 flatten component 列表
+                // Shizuku 直写:读取已有服务并追加，避免覆盖并杀死系统内其他无障碍服务
+                val current = android.provider.Settings.Secure.getString(
+                    appContext.contentResolver,
+                    android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                ).orEmpty()
+                val newServices = if (current.isEmpty()) component else {
+                    val list = current.split(":").filter { it.isNotBlank() }.toMutableSet()
+                    list.add(component)
+                    list.joinToString(":")
+                }
                 val ok1 = runCatching {
-                    shizukuExecutor.execShell("settings put secure enabled_accessibility_services $component", "a11y-enable")
+                    shizukuExecutor.execShell("settings put secure enabled_accessibility_services '$newServices'", "a11y-enable")
                 }.getOrNull()?.success == true
                 val ok2 = runCatching {
                     shizukuExecutor.execShell("settings put secure accessibility_enabled 1", "a11y-enable")
@@ -192,6 +201,7 @@ class ControlledViewModel @Inject constructor(
             sessionKey = response.sessionKey,
             expiresAt = response.expiresAt,
             serverUrl = payload.serverUrl,
+            pairToken = payload.pairToken,
         )
         withContext(Dispatchers.IO) { configStore.save(config) }
         withContext(Dispatchers.Main) {

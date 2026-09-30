@@ -130,8 +130,8 @@ class SelfHostedUpdateChannel(
 
     override suspend fun download(info: UpdateCheckResponse, onProgress: (Int) -> Unit): File =
         withContext(Dispatchers.IO) {
-            // 优先差分包(bsdiff 未集成时 patch 即原文件,sha256 必不匹配 → 自动回退全量)
-            val patchUrl = info.patchUrl
+            // 差分包优先(仅在 bsdiff 引擎可用时尝试,未集成时直接短路走全量包,避免重复下载白耗流量)
+            val patchUrl = info.patchUrl?.takeIf { isBsdiffSupported() }
             if (patchUrl != null) {
                 runCatching {
                     val patchFile = fetch(patchUrl, "update.patch", onProgress)
@@ -139,6 +139,8 @@ class SelfHostedUpdateChannel(
                     if (verifySha256(patched, info.sha256)) return@withContext patched
                     Log.w(TAG, "patched apk sha256 mismatch, fallback to full")
                 }.onFailure { Log.w(TAG, "patch apply failed, fallback to full", it) }
+            } else if (info.patchUrl != null) {
+                Log.i(TAG, "bsdiff engine not integrated yet, skipping patch and downloading full apk directly")
             }
             // 全量 fallback
             val fullUrl = info.fullApkUrl ?: error("no fullApkUrl and patch failed")
@@ -202,6 +204,9 @@ class SelfHostedUpdateChannel(
             false
         }
     }
+
+    /** 是否支持 bsdiff 差分还原(尚未集成对应 native 动态库前返回 false)。 */
+    private fun isBsdiffSupported(): Boolean = false
 
     /**
      * 应用 bsdiff 差分包。

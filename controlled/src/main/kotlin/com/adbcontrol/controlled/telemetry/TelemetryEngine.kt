@@ -44,14 +44,13 @@ class TelemetryEngine(
 
         // Status:兜底 2 分钟 + 显著变化(每 10 秒检查;电量±5%/网络切换/屏幕开关立即上报)
         jobs += scope.launch {
+            var lastReport = System.currentTimeMillis()
             while (true) {
                 delay(TimeUnit.SECONDS.toMillis(10))
-                if (statusReporter.hasSignificantChange()) {
+                val now = System.currentTimeMillis()
+                if (statusReporter.hasSignificantChange() || (now - lastReport >= TimeUnit.MINUTES.toMillis(2))) {
                     statusReporter.reportOnce(deviceId)
-                } else {
-                    // 兜底每 2 分钟
-                    delay(TimeUnit.MINUTES.toMillis(2) - TimeUnit.SECONDS.toMillis(10))
-                    statusReporter.reportOnce(deviceId)
+                    lastReport = now
                 }
             }
         }

@@ -106,7 +106,7 @@ class AppTimeController(
         synchronized(limits) { limits.remove(pkg) }
         synchronized(limitSuspended) { limitSuspended.remove(pkg) }
         persist()
-        scope.launch { unsuspend(pkg) }
+        scope.launch { syncSuspension(pkg) }
     }
 
     /** 设置单包禁用时间窗("HH:mm",支持跨零点)。 */
@@ -120,7 +120,7 @@ class AppTimeController(
         synchronized(windows) { windows.remove(pkg) }
         synchronized(windowSuspended) { windowSuspended.remove(pkg) }
         persist()
-        scope.launch { unsuspend(pkg) }
+        scope.launch { syncSuspension(pkg) }
     }
 
     fun start() {
@@ -152,7 +152,7 @@ class AppTimeController(
         if (lastSampleDay != today) {
             val toRecover = synchronized(limitSuspended) { limitSuspended.toSet() }
             synchronized(limitSuspended) { limitSuspended.clear() }
-            for (pkg in toRecover) unsuspend(pkg)
+            for (pkg in toRecover) syncSuspension(pkg)
             lastSampleDay = today
         }
         val start = cal.timeInMillis
@@ -202,19 +202,36 @@ class AppTimeController(
                     synchronized(windowSuspended) { windowSuspended += action.pkg }
                 }
             } else {
-                unsuspend(action.pkg)
                 synchronized(windowSuspended) { windowSuspended.remove(action.pkg) }
+                syncSuspension(action.pkg)
             }
+        }
+    }
+
+    /** 统一解封同步:只有既不在限时超额名单、也不在时间窗名单内,才执行真实 unsuspend */
+    private suspend fun syncSuspension(pkg: String) {
+        val shouldBeSuspended = synchronized(limitSuspended) { pkg in limitSuspended } ||
+            synchronized(windowSuspended) { pkg in windowSuspended }
+        if (!shouldBeSuspended) {
+            unsuspend(pkg)
         }
     }
 
     /** 主控重置(次日或配置变更)后清除 suspend 标记。 */
     fun reset(pkg: String? = null) {
+        val pkgs = synchronized(limitSuspended) {
+            if (pkg == null) limitSuspended.toSet() else setOf(pkg)
+        } + synchronized(windowSuspended) {
+            if (pkg == null) windowSuspended.toSet() else setOf(pkg)
+        }
         synchronized(limitSuspended) {
             if (pkg == null) limitSuspended.clear() else limitSuspended.remove(pkg)
         }
         synchronized(windowSuspended) {
             if (pkg == null) windowSuspended.clear() else windowSuspended.remove(pkg)
+        }
+        scope.launch {
+            for (p in pkgs) syncSuspension(p)
         }
     }
 
