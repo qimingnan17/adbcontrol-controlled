@@ -96,7 +96,7 @@ adbcontrol-controlled/
 │   ├── ui/                         # Jetpack Compose 界面与 ViewModel
 │   └── update/                     # OTA 升级运行器与镜像下载器
 ├── shared/                         # 跨端共享协议与模型 (引用自 shared 工程)
-├── keystore/debug.keystore         # 入库的固定调试签名(本地/CI 统一,保证 OTA 覆盖安装)
+├── (keystore 已移出仓库,v2.0 起由环境变量 / CI Secret 提供签名)
 └── build.gradle.kts                # Android 模块构建配置
 ```
 
@@ -126,7 +126,7 @@ cd adbcontrol-controlled
 ./gradlew :controlled:assembleRelease -PversionCode=42 -PversionName=1.4.2
 ```
 
-> **签名说明**：`release` 构建类型沿用仓库内固定的 `keystore/debug.keystore`（口令 `android`，别名 `androiddebugkey`）并开启 R8 + 资源压缩。GitHub Actions runner 每次构建都会随机生成 debug.keystore，导致 CI 各版本之间、CI 与本地构建之间签名互不相同，OTA 覆盖安装必报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`——因此该密钥库已入库以便签名统一（个人项目取舍，正式发布请换成自有 release 密钥）。CI 早期用 `assembleDebug` 产出 82MB 大包，经后端中转时把 fly 免费机 256MB 内存打爆 OOM；切 `assembleRelease` 后降到 ~11MB。
+> **签名说明(v2.0 起)**：签名文件不再入库。Gradle 从环境变量 `SIGNING_KEYSTORE_PATH` / `SIGNING_STORE_PASSWORD` / `SIGNING_KEY_ALIAS` / `SIGNING_KEY_PASSWORD` 读取签名;未配置时 debug(以及本地 release)回退 AGP 默认调试签名(**不能**覆盖安装现网设备)。CI(`ota.yml`)从 Secret `SIGNING_KEYSTORE_BASE64` 解码 keystore,缺失即失败。为保证现网设备 OTA 可覆盖安装,Secret 必须是**原** keystore(未轮换);旧 keystore 仍保留在 git 历史中,若将来轮换密钥,所有已安装设备需一次性卸载重装。R8 + 资源压缩保持开启(~11MB)。
 
 ### 3. 安装与启动
 ```bash
@@ -148,7 +148,7 @@ adb shell am start -n com.adbcontrol.controlled/.ui.MainActivity
 | 推送 `v*`      | `v1.0.1`    | tag 名（去 `v`）     | 正式命名发布，生成 release notes          |
 | 推送 `main`    | `nightly`   | `nightly-{短sha}` | 滚动 nightly，**先删旧 nightly 再传新包**   |
 
-流程：`assembleRelease`(R8，debug 签名) → 计算 sha256 + 体积 → 上传 GitHub Release → `POST {后端}/api/updates/publish` 注册版本清单并广播 `update_available`（后端非 200 即失败退出）。
+流程：解码签名 Secret → `assembleRelease`(R8，固定签名) → 计算 sha256 + 体积 → 上传 GitHub Release → `POST {后端}/api/updates/publish` 注册版本清单并广播 `update_available`（后端非 200 即失败退出）。
 
 所需仓库 Secrets：`ADB_BACKEND_URL`（后端地址）、`ADB_PM_TOKEN`（与后端 `ADB_PM_TOKEN` 环境变量一致）。
 
@@ -200,3 +200,15 @@ adb shell dumpsys package com.adbcontrol.controlled | grep -i "signing\|version"
 # 手动清除应用数据 (重新进入初始配对状态)
 adb shell pm clear com.adbcontrol.controlled
 ```
+
+## 🆕 v2.0 更新摘要
+
+- **协议版本**:所有 MQTT 信封 / 协议模型带 `protocolVersion`(发送 2;接收缺失视为 1 并容忍)。
+- **OTA 完整性**:下载后校验 SHA-256,不一致删除并上报 `UPDATE_HASH_MISMATCH`,绝不安装。
+- **申请延时**:拦截页「申请再用 N 分钟」→ `request/{deviceId}` 发布 `EXTENSION_REQUEST`;处理 `APP_TIME_EXTEND` / `APP_TIME_EXTEND_DENIED`。
+- **准实时用量**:每 15 分钟上报当日累计(`partial: true`)。
+- **地理围栏**:处理 `GEOFENCE_SET`,持久化并应用。
+- **审计**:命令回执带执行通道 `channel`。
+- **新界面**:权限自检向导、受限应用拦截页、Material 3 动态取色首页、「本设备受管理」透明度页与常驻通知。
+- **省电**:电量 <20% 或静止时降低定位 / 心跳频率。
+

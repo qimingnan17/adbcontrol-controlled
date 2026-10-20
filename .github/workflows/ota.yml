@@ -3,7 +3,7 @@
 # 触发:
 #   推 tag v* → 命名 Release(如 v1.0.1),版本号 = tag 名。
 #   推 main   → 滚动 Nightly Release(tag=nightly,覆盖前一个),版本号 = nightly-{短sha}。
-# 流程:构建 release APK(R8 压缩,~30MB;挂 debug 签名保证现网设备可覆盖安装,
+# 流程:构建 release APK(R8 压缩;使用 Secret 中的固定签名保证现网设备可覆盖安装,
 #      versionCode=提交计数单调递增)
 #      → 计算 sha256 → 上传到 GitHub Release
 #      → POST {后端}/api/updates/publish 注册版本清单并广播 update_available。
@@ -12,6 +12,9 @@
 # 需要的仓库 Secrets(一次性配置):
 #   ADB_BACKEND_URL  如 https://adbcontrol-backend.fly.dev
 #   ADB_PM_TOKEN     与后端 ADB_PM_TOKEN 环境变量一致
+#   v2.0 签名(keystore 已移出仓库):
+#   SIGNING_KEYSTORE_BASE64  原 keystore/debug.keystore 的 base64(未轮换密钥,保证现网设备可覆盖安装)
+#   SIGNING_STORE_PASSWORD / SIGNING_KEY_ALIAS / SIGNING_KEY_PASSWORD
 
 name: OTA Release
 
@@ -59,11 +62,32 @@ jobs:
           echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
           echo "Building v$VERSION_NAME (code=$VERSION_CODE)"
 
-      - name: Build release APK (R8, debug-signed for OTA upgrade compatibility)
+      - name: Decode signing keystore
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$SIGNING_KEYSTORE_BASE64" ]; then
+            echo "::error::Secret SIGNING_KEYSTORE_BASE64 未配置。发布包必须使用固定签名,否则现网设备 OTA 覆盖安装会失败。"
+            exit 1
+          fi
+          KS="$RUNNER_TEMP/release.keystore"
+          echo "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$KS"
+          test -s "$KS"
+          echo "SIGNING_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+
+      - name: Build release APK (R8, fixed signing from secrets)
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: >
           ./gradlew :controlled:assembleRelease --no-daemon
           -PversionCode=${{ steps.ver.outputs.version_code }}
           -PversionName=${{ steps.ver.outputs.version_name }}
+
+      - name: Remove decoded keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
 
       - name: Hash APK
         id: hash

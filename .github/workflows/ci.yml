@@ -1,0 +1,41 @@
+# PR / 功能分支构建校验(不发布、不需要签名 Secret)。
+# debug 构建在未配置签名环境变量时回退 AGP 默认调试签名。
+name: CI Build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['feat/**', 'fix/**']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Unit tests (shared)
+        run: ./gradlew :shared:test --no-daemon
+
+      - name: Assemble debug
+        run: ./gradlew :controlled:assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: controlled-debug
+          path: controlled/build/outputs/apk/debug/*.apk
+          retention-days: 7
