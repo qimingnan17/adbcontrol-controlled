@@ -8,6 +8,9 @@
     <string name="notif_foreground_title">AdbControl Agent 运行中</string>
     <string name="notif_foreground_text">设备已上线,等待主控指令</string>
     <string name="notif_foreground_subtext">MQTT 已连接</string>
+    <!-- v2.0 透明度 -->
+    <string name="notif_managed_title">本设备受管理</string>
+    <string name="notif_managed_action">查看已启用的管理能力</string>
 
     <!-- 主控下发的任务栏通知通道 -->
     <string name="notif_channel_remote_task">主控通知 / 定时提醒</string>

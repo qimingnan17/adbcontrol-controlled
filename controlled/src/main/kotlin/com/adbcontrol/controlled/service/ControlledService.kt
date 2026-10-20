@@ -26,6 +26,7 @@ import com.adbcontrol.controlled.oem.MiuiAdapter
 import com.adbcontrol.controlled.oem.OemAccessibilityGuard
 import com.adbcontrol.controlled.telemetry.TelemetryEngine
 import com.adbcontrol.controlled.ui.MainActivity
+import com.adbcontrol.controlled.ui.transparency.ManagedCapabilities
 import com.adbcontrol.controlled.update.UpdateRunner
 import com.adbcontrol.shared.model.AppConfig
 import dagger.hilt.android.AndroidEntryPoint
@@ -67,6 +68,8 @@ class ControlledService : LifecycleService() {
         Log.i(TAG, "onCreate")
         ensureNotificationChannel()
         startForegroundCompat()
+        _running.value = true
+        startNotificationRefresher()
 
         // L7:周期兜底心跳(15 分钟)
         HeartbeatGuardWorker.enqueue(this)
@@ -108,6 +111,7 @@ class ControlledService : LifecycleService() {
             mqttManager.listener = commandHandler
             mqttManager.start(config)
             telemetryEngine.start(config)
+            appTimeController.start()
         }
     }
 
@@ -153,6 +157,7 @@ class ControlledService : LifecycleService() {
         runCatching { appTimeController.stop() }
         runCatching { telemetryEngine.stop() }
         runCatching { mqttManager.stop() }
+        _running.value = false
         super.onDestroy()
     }
 
@@ -178,20 +183,44 @@ class ControlledService : LifecycleService() {
         }
     }
 
+    /**
+     * v2.0 透明度:常驻通知标题固定为"本设备受管理",展开列出当前启用的全部管理能力,
+     * 点击进入 App 内"本设备受管理"详情页。
+     */
     private fun buildForegroundNotification(): Notification {
         val contentIntent = PendingIntent.getActivity(
             this, 0,
-            Intent(this, MainActivity::class.java),
+            Intent(this, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_OPEN, MainActivity.OPEN_TRANSPARENCY)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val summary = runCatching { ManagedCapabilities.summary(this) }
+            .getOrDefault(getString(R.string.notif_foreground_text))
+        val big = runCatching { ManagedCapabilities.bigText(this) }.getOrDefault(summary)
         return NotificationCompat.Builder(this, CHANNEL_FOREGROUND)
-            .setContentTitle(getString(R.string.notif_foreground_title))
-            .setContentText(getString(R.string.notif_foreground_text))
+            .setContentTitle(getString(R.string.notif_managed_title))
+            .setContentText(summary)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(big))
             .setContentIntent(contentIntent)
+            .addAction(0, getString(R.string.notif_managed_action), contentIntent)
             .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true) // L1:不可清除
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+    }
+
+    /** 能力随授权变化:定期刷新常驻通知内容(10 分钟)。 */
+    private fun startNotificationRefresher() {
+        lifecycleScope.launch(Dispatchers.Default) {
+            while (true) {
+                kotlinx.coroutines.delay(10 * 60 * 1000L)
+                runCatching {
+                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildForegroundNotification())
+                }
+            }
+        }
     }
 
     private fun startForegroundCompat() {
@@ -251,6 +280,10 @@ class ControlledService : LifecycleService() {
         private const val NOTIFICATION_ID = 1001
         private const val RESTART_WORK_NAME = "controlled_restart_on_task_removed"
         const val ACTION_RESTART_AGENT = "com.adbcontrol.controlled.ACTION_RESTART_AGENT"
+
+        private val _running = kotlinx.coroutines.flow.MutableStateFlow(false)
+        /** 服务是否在运行(首页连接状态卡片用)。 */
+        val running: kotlinx.coroutines.flow.StateFlow<Boolean> = _running
 
         /** 启动服务(供 BootReceiver / UI 调用)。 */
         fun start(context: Context) {
