@@ -1,10 +1,14 @@
 package com.adbcontrol.shared.model
 
+import com.adbcontrol.shared.ProtocolVersion
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 
 /**
  * 一条具体要执行的命令。对应"应用管理 / 截屏录屏 / 输入控制 / 文件传输 / Shell / 系统控制 / 应用时间管理"。
  */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class Command(
     val category: CommandCategory,
@@ -12,6 +16,7 @@ data class Command(
     val params: Map<String, String> = emptyMap(),
     /** 是否要求被控端回传执行结果（回报可选） */
     val expectResult: Boolean = true,
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 )
 
 @Serializable
