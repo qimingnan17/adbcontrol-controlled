@@ -66,12 +66,23 @@
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.AdbControlled">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- v2.0 受限应用拦截页:无障碍服务拉起,独立任务栈、不进最近任务 -->
+        <activity
+            android:name=".ui.intercept.InterceptActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.adbcontrol.controlled.intercept"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AdbControlled.Intercept" />
 
         <!-- ZXing 扫码 Activity:离线扫码界面。库自带的 zxing_CaptureTheme 即为
              AppCompat 主题,无需覆盖;仅锁定竖屏。 -->
