@@ -245,6 +245,10 @@ class MqttManager(
                 publish(pong, "pong/${config.deviceId}", qos = 0)
                 listener?.onPing(ws)
             }
+            // v2.0:延时审批结果 / 地理围栏下发(契约 §3 §5),由 CommandHandler 统一处理
+            MessageType.APP_TIME_EXTEND,
+            MessageType.APP_TIME_EXTEND_DENIED,
+            MessageType.GEOFENCE_SET -> listener?.onControlMessage(ws, ws.type.name)
             MessageType.PUSH_DATA -> {
                 // 推送通道:同时承载遥测回执、更新通知等业务事件(主控端按 payload 内 event 字段分发)
                 listener?.onPush(ws)
@@ -312,6 +316,8 @@ class MqttManager(
         fun onDisconnected(cause: Throwable?)
         /** 连接被认证拒绝(凭证吊销/过期):上层应清除本地配对并停 MQTT,避免反复 401 重连。 */
         fun onAuthFailed() {}
+        /** v2.0 控制类消息(APP_TIME_EXTEND / APP_TIME_EXTEND_DENIED / GEOFENCE_SET)。 */
+        fun onControlMessage(message: WsMessage, type: String) {}
     }
 
     companion object {

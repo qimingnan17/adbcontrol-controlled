@@ -16,6 +16,16 @@ import com.adbcontrol.controlled.storage.R2StorageClient
 import com.adbcontrol.controlled.apptime.AppTimeController
 import com.adbcontrol.controlled.notification.ReminderNotificationCenter
 import com.adbcontrol.controlled.update.UpdateRunner
+import com.adbcontrol.controlled.apptime.ExtensionRequestManager
+import com.adbcontrol.controlled.telemetry.LocationReporter
+import com.adbcontrol.shared.model.AppTimeExtend
+import com.adbcontrol.shared.model.AppTimeExtendDenied
+import com.adbcontrol.shared.model.GeofenceDef
+import com.adbcontrol.shared.model.GeofenceSet
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import com.adbcontrol.shared.model.CommandCategory
 import com.adbcontrol.shared.model.ReminderPayload
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +56,8 @@ class CommandHandler(
     private val shizukuExecutor: ShizukuExecutor,
     private val accessibilityExecutor: AccessibilityExecutor,
     private val updateRunner: UpdateRunner,
+    private val extensionRequestManager: ExtensionRequestManager,
+    private val locationReporter: LocationReporter,
 ) : MqttManager.MqttMessageListener {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -62,7 +74,8 @@ class CommandHandler(
             val started = System.currentTimeMillis()
             // APP_TIME 配置类命令不下 executor 链,直接落到本地 AppTimeController;
             // screencap 特判走截图→R2 链路(原 dispatcher 只回字节大小,URL 从未回传)
-            val result = handleAppTimeConfig(message.id, command)
+            val result = handleV2Command(message.id, command)
+                ?: handleAppTimeConfig(message.id, command)
                 ?: handleScreencap(message.id, command)
                 ?: dispatcher.dispatch(command, message.id)
             val duration = System.currentTimeMillis() - started
@@ -85,13 +98,16 @@ class CommandHandler(
         val started = System.currentTimeMillis()
 
         var png: ByteArray? = null
+        var channel: String? = null
         if (shizukuExecutor.isAvailable()) {
             png = shizukuExecutor.captureScreenBytes()
+            if (png != null) channel = shizukuExecutor.name
         }
         if (png == null && accessibilityExecutor.isAvailable()) {
             png = runCatching { accessibilityExecutor.captureScreenPng() }
                 .onFailure { Log.w(TAG, "accessibility capture failed", it) }
                 .getOrNull()
+            if (png != null) channel = accessibilityExecutor.name
         }
         if (png == null) return failResult(commandId, "SCREENSHOT_UNAVAILABLE")
 
@@ -106,6 +122,7 @@ class CommandHandler(
                     commandId = commandId, success = true,
                     output = "screenshotUrl=$url",
                     durationMs = System.currentTimeMillis() - started,
+                    channel = channel,
                 )
             }.onFailure { Log.w(TAG, "R2 upload failed, fallback to base64", it) }
         }
@@ -118,6 +135,7 @@ class CommandHandler(
                 commandId = commandId, success = true,
                 output = "screenshotBase64=$b64",
                 durationMs = System.currentTimeMillis() - started,
+                channel = channel,
             )
         } else {
             failResult(commandId, "SCREENSHOT_TOO_LARGE(${png.size}B, no usable R2)")
@@ -169,7 +187,10 @@ class CommandHandler(
      * 处理应用时间管控配置(setLimit / clearLimit / setWindow / clearWindow)。
      * 返回 null 表示该命令仍需走 executor 链(如 suspend/unsuspend/hide)。
      */
-    private fun handleAppTimeConfig(commandId: String, command: Command): ExecutionResult? {
+    private fun handleAppTimeConfig(commandId: String, command: Command): ExecutionResult? =
+        handleAppTimeConfigInner(commandId, command)?.copy(channel = CHANNEL_LOCAL)
+
+    private fun handleAppTimeConfigInner(commandId: String, command: Command): ExecutionResult? {
         if (command.category != CommandCategory.APP_TIME) return null
         val pkg = command.params["pkg"]?.trim().orEmpty()
         return when (command.action) {
@@ -215,15 +236,8 @@ class CommandHandler(
 
     private fun publishResult(result: ExecutionResult, originalId: String) {
         val deviceId = mqttManager.currentDeviceId() ?: return
-        // ExecutionResult 在 shared 模块未声明 @Serializable,这里手写 JSON 对象。
-        val element: JsonObject = buildJsonObject {
-            put("commandId", result.commandId)
-            put("success", result.success)
-            put("output", result.output)
-            put("durationMs", result.durationMs)
-            put("timestamp", result.timestamp)
-        }
-        val payloadJson = json.encodeToString(JsonObject.serializer(), element)
+        // v2.0:ExecutionResult 已 @Serializable,直接编码(含 channel / protocolVersion,契约 §1 §9)
+        val payloadJson = json.encodeToString(ExecutionResult.serializer(), result)
         val msg = WsMessage(
             id = "result-$originalId",
             type = MessageType.COMMAND_RESULT,
@@ -254,7 +268,104 @@ class CommandHandler(
 
     override fun onPush(message: WsMessage) {
         Log.i(TAG, "push data received: ${message.id}")
+        // 兼容:部分后端版本可能把 v2 控制消息包在 PUSH 载荷里({"type":"APP_TIME_EXTEND", ...})
+        val type = runCatching {
+            (json.parseToJsonElement(message.payload) as? JsonObject)?.get("type")
+                ?.let { (it as? JsonPrimitive)?.contentOrNull }
+        }.getOrNull()?.uppercase()
+        if (type != null && type in V2_TYPES) onControlMessage(message, type)
     }
+
+    // ---------- v2.0 控制消息(契约 §3 §5) ----------
+
+    /**
+     * 处理 APP_TIME_EXTEND / APP_TIME_EXTEND_DENIED / GEOFENCE_SET。
+     * 信封已在 MqttManager 经 HMAC 验签,签名规则与其他命令一致。
+     * 去重:同一 msg id 只处理一次(QoS 1 可能重发)。
+     */
+    override fun onControlMessage(message: WsMessage, type: String) {
+        if (!processedIds.add(message.id)) {
+            Log.i(TAG, "duplicate control message ${message.id}, skip")
+            return
+        }
+        trimProcessed()
+        scope.launch {
+            val result = runCatching { applyControl(type.uppercase(), message.payload, emptyMap()) }
+                .getOrElse { Result.failure(it) }
+            val out = result.fold(
+                onSuccess = { ExecutionResult(commandId = message.id, success = true, output = it, channel = CHANNEL_LOCAL) },
+                onFailure = { ExecutionResult(commandId = message.id, success = false, output = "$type failed: ${it.message}", channel = CHANNEL_LOCAL) },
+            )
+            publishResult(out, message.id)
+        }
+    }
+
+    /** 兼容 COMMAND 形态:Command(action = "APP_TIME_EXTEND" / "appTimeExtend" / "GEOFENCE_SET" ...)。 */
+    private fun handleV2Command(commandId: String, command: Command): ExecutionResult? {
+        val type = command.action.replace(Regex("([a-z])([A-Z])"), "$1_$2").uppercase()
+        if (type !in V2_TYPES) return null
+        val payload = command.params["payload"] ?: command.params["json"] ?: "{}"
+        val result = runCatching { applyControl(type, payload, command.params) }.getOrElse { Result.failure(it) }
+        return result.fold(
+            onSuccess = { ExecutionResult(commandId = commandId, success = true, output = it, channel = CHANNEL_LOCAL) },
+            onFailure = { ExecutionResult(commandId = commandId, success = false, output = "$type failed: ${it.message}", channel = CHANNEL_LOCAL) },
+        )
+    }
+
+    private fun applyControl(type: String, payload: String, params: Map<String, String>): Result<String> {
+        return when (type) {
+            "APP_TIME_EXTEND" -> {
+                val p = decodeOrParams(payload, AppTimeExtend.serializer()) {
+                    AppTimeExtend(
+                        requestId = params["requestId"],
+                        packageName = params["packageName"] ?: params["pkg"] ?: "",
+                        minutes = params["minutes"]?.toIntOrNull() ?: 0,
+                    )
+                }
+                if (p.packageName.isBlank() || p.minutes <= 0) return Result.failure(IllegalArgumentException("invalid packageName/minutes"))
+                extensionRequestManager.onApproved(p)
+                Result.success("extended ${p.packageName} +${p.minutes}min")
+            }
+            "APP_TIME_EXTEND_DENIED" -> {
+                val p = decodeOrParams(payload, AppTimeExtendDenied.serializer()) {
+                    AppTimeExtendDenied(
+                        requestId = params["requestId"],
+                        packageName = params["packageName"] ?: params["pkg"] ?: "",
+                    )
+                }
+                if (p.packageName.isBlank()) return Result.failure(IllegalArgumentException("missing packageName"))
+                extensionRequestManager.onDenied(p)
+                Result.success("denied ${p.packageName}")
+            }
+            "GEOFENCE_SET" -> {
+                val defs = parseGeofences(payload)
+                    ?: return Result.failure(IllegalArgumentException("unparseable geofence list"))
+                val n = locationReporter.applyGeofences(defs)
+                Result.success("geofences applied: $n")
+            }
+            else -> Result.failure(IllegalArgumentException("unknown type $type"))
+        }
+    }
+
+    private fun <T> decodeOrParams(
+        payload: String,
+        serializer: kotlinx.serialization.KSerializer<T>,
+        fallback: () -> T,
+    ): T = runCatching { json.decodeFromString(serializer, payload) }.getOrElse { fallback() }
+
+    /** 兼容三种载荷:`[...]`、`{"geofences":[...]}`、`{"fences":[...]}`。 */
+    private fun parseGeofences(payload: String): List<GeofenceDef>? = runCatching {
+        val listSer = ListSerializer(GeofenceDef.serializer())
+        when (val el = json.parseToJsonElement(payload)) {
+            is JsonArray -> json.decodeFromJsonElement(listSer, el)
+            is JsonObject -> {
+                val arr = el["geofences"] ?: el["fences"] ?: el["list"]
+                if (arr != null) json.decodeFromJsonElement(listSer, arr)
+                else json.decodeFromJsonElement(GeofenceSet.serializer(), el).geofences
+            }
+            else -> null
+        }
+    }.onFailure { Log.w(TAG, "geofence payload parse failed", it) }.getOrNull()
 
     override fun onPing(message: WsMessage) {
         // pong 由 MqttManager 直接回复
@@ -294,5 +405,8 @@ class CommandHandler(
 
     companion object {
         private const val TAG = "CommandHandler"
+        /** 不经执行器链、在本进程内完成的命令(配置类)回执 channel 值 */
+        private const val CHANNEL_LOCAL = "Normal"
+        private val V2_TYPES = setOf("APP_TIME_EXTEND", "APP_TIME_EXTEND_DENIED", "GEOFENCE_SET")
     }
 }

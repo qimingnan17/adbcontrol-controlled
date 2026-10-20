@@ -14,6 +14,7 @@ import com.adbcontrol.controlled.storage.R2StorageClient
 import com.adbcontrol.controlled.telemetry.ActivityReporter
 import com.adbcontrol.controlled.telemetry.HealthReporter
 import com.adbcontrol.controlled.telemetry.LocationReporter
+import com.adbcontrol.controlled.telemetry.PowerPolicy
 import com.adbcontrol.controlled.telemetry.StatusReporter
 import com.adbcontrol.controlled.telemetry.SystemInfoCollector
 import com.adbcontrol.controlled.telemetry.TelemetryEngine
@@ -70,9 +71,12 @@ object AppModule {
         shizukuExecutor: ShizukuExecutor,
         accessibilityExecutor: com.adbcontrol.controlled.executor.AccessibilityExecutor,
         updateRunner: com.adbcontrol.controlled.update.UpdateRunner,
+        extensionRequestManager: com.adbcontrol.controlled.apptime.ExtensionRequestManager,
+        locationReporter: LocationReporter,
     ): CommandHandler = CommandHandler(
         dispatcher, mqttManager, json, appTimeController, notificationCenter,
         configStore, shizukuExecutor, accessibilityExecutor, updateRunner,
+        extensionRequestManager, locationReporter,
     )
 
     // ---------- 遥测 ----------
@@ -125,14 +129,18 @@ object AppModule {
     )
 
     @Provides @Singleton
+    fun providePowerPolicy(collector: SystemInfoCollector): PowerPolicy = PowerPolicy(collector)
+
+    @Provides @Singleton
     fun provideTelemetryEngine(
         statusReporter: StatusReporter,
         locationReporter: LocationReporter,
         activityReporter: ActivityReporter,
         usageReporter: UsageReporter,
         healthReporter: HealthReporter,
+        powerPolicy: PowerPolicy,
     ): TelemetryEngine = TelemetryEngine(
-        statusReporter, locationReporter, activityReporter, usageReporter, healthReporter
+        statusReporter, locationReporter, activityReporter, usageReporter, healthReporter, powerPolicy
     )
 
     // ---------- 配对 / 更新 / 应用时间 ----------
