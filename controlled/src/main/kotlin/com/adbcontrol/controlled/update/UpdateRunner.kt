@@ -86,6 +86,7 @@ class UpdateRunner @Inject constructor(
             _state.value = _state.value.copy(busy = false, statusText = "另一个更新任务正在执行,请稍后")
             return
         }
+        var pendingInfo: com.adbcontrol.shared.model.UpdateCheckResponse? = null
         try {
             // 周期巡检节流:距上次检查不足 6h 跳过(设备频繁重启场景防风暴)
             if (source == "periodic") {
@@ -105,6 +106,7 @@ class UpdateRunner @Inject constructor(
                 return
             }
             Log.i(TAG, "update available: v${info.latestVersionName}(${info.latestVersionCode}) from=$source")
+            pendingInfo = info
 
             _state.value = UpdateUiState(
                 busy = true,
@@ -139,6 +141,20 @@ class UpdateRunner @Inject constructor(
             )
             notifyDone(text)
             Log.i(TAG, "install done success=${result.success} msg=${result.message}")
+        } catch (e: UpdateHashMismatchException) {
+            // v2.0 契约 §2:校验失败 → 文件已删除,上报 UPDATE_HASH_MISMATCH,不安装
+            Log.e(TAG, "update hash mismatch", e)
+            pendingInfo?.let {
+                runCatching {
+                    channel.report(it.latestVersionCode, false, UpdateHashMismatchException.CODE, 0L)
+                }
+            }
+            _state.value = UpdateUiState(
+                busy = false,
+                statusText = "更新包校验失败(SHA-256 不一致),已丢弃",
+                lastError = UpdateHashMismatchException.CODE,
+            )
+            notifyDone("更新包校验失败,已丢弃")
         } catch (t: Throwable) {
             Log.e(TAG, "update flow failed", t)
             _state.value = UpdateUiState(
