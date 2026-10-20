@@ -1,13 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 深色玻璃主题基底。运行时由 Compose Material3 主题接管,这里仅提供启动屏样式。 -->
-    <style name="Theme.AdbControlled" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@color/bg_base</item>
+    <!-- v2.0:跟随系统深浅色(DayNight),运行时由 Compose Material3 动态取色接管。 -->
+    <style name="Theme.AdbControlled" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
         <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="o_mr1">shortEdges</item>
+    </style>
+
+    <!-- 拦截页:全屏、不进最近任务 -->
+    <style name="Theme.AdbControlled.Intercept" parent="Theme.AdbControlled">
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Activity</item>
     </style>
 
 </resources>

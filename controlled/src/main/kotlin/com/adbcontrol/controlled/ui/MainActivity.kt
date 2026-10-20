@@ -1,16 +1,12 @@
 package com.adbcontrol.controlled.ui
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,61 +15,93 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BatterySaver
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.adbcontrol.controlled.R
+import com.adbcontrol.controlled.apptime.AppTimeController
+import com.adbcontrol.controlled.apptime.ExtensionRequestManager
+import com.adbcontrol.controlled.net.MqttManager
 import com.adbcontrol.controlled.oem.OemBatterySettings
-import com.adbcontrol.controlled.oem.OemHelper
 import com.adbcontrol.controlled.service.ControlledService
-import com.adbcontrol.controlled.ui.theme.AppColors
+import com.adbcontrol.controlled.telemetry.PowerPolicy
 import com.adbcontrol.controlled.ui.theme.ControlledTheme
+import com.adbcontrol.controlled.ui.theme.StatusColors
+import com.adbcontrol.controlled.ui.transparency.ManagedCapabilities
+import com.adbcontrol.controlled.ui.transparency.TransparencyScreen
+import com.adbcontrol.controlled.ui.wizard.PermissionChecker
+import com.adbcontrol.controlled.ui.wizard.PermissionWizardScreen
 import dagger.hilt.android.AndroidEntryPoint
 
 /**
- * 被控端主入口。README 15.7 "被控端 配对" 屏幕。
+ * 被控端主入口(v2.0 重设计)。
  *
- * 4 步:配对(QR 扫码)→ 权限自检(MUST/OPT badge)→ 启动 Agent。
- * 当前为骨架,权限检测与扫码实际触发由 [ControlledViewModel] 提供。
+ * 三个页面(轻量状态切换,不引入导航图):
+ * - 首页:Material 3 动态取色大卡片 —— 连接状态 / 当前生效的管控 / 今日各受限 App 剩余时长 / 本设备受管理 / 更新
+ * - 权限自检向导:首次启动自动进入,可从首页重新打开
+ * - 本设备受管理:透明度页(常驻通知点击也会进入)
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    companion object {
-        private const val REQUEST_PERMISSIONS = 1001
-    }
+    private var openRequest by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        requestRuntimePermissions()
+        openRequest = intent?.getStringExtra(EXTRA_OPEN)
         setContent {
             ControlledTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = AppColors.bgBase) {
-                    SetupScreen(
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    AppRoot(
+                        initialOpen = openRequest,
+                        onConsumedOpen = { openRequest = null },
                         onStartService = { ControlledService.start(this) },
                         onStopService = { ControlledService.stop(this) },
                     )
@@ -82,42 +110,95 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestRuntimePermissions() {
-        val permissions = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-            }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        intent.getStringExtra(EXTRA_OPEN)?.let { openRequest = it }
+    }
+
+    companion object {
+        const val EXTRA_OPEN = "open"
+        const val OPEN_TRANSPARENCY = "transparency"
+        const val OPEN_WIZARD = "wizard"
+    }
+}
+
+private enum class Page { HOME, WIZARD, TRANSPARENCY }
+
+@Composable
+private fun AppRoot(
+    initialOpen: String?,
+    onConsumedOpen: () -> Unit,
+    onStartService: () -> Unit,
+    onStopService: () -> Unit,
+    viewModel: ControlledViewModel = hiltViewModel(),
+) {
+    val ctx = LocalContext.current
+    var page by rememberSaveable {
+        mutableStateOf(if (PermissionChecker.isWizardDone(ctx)) Page.HOME else Page.WIZARD)
+    }
+    LaunchedEffect(initialOpen) {
+        when (initialOpen) {
+            MainActivity.OPEN_TRANSPARENCY -> page = Page.TRANSPARENCY
+            MainActivity.OPEN_WIZARD -> page = Page.WIZARD
         }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
-        if (permissions.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, permissions.toTypedArray(), REQUEST_PERMISSIONS)
+        if (initialOpen != null) onConsumedOpen()
+    }
+    BackHandler(enabled = page != Page.HOME) { page = Page.HOME }
+
+    val uiState by viewModel.uiState.collectAsState()
+    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize().systemBarsPadding()) {
+        when (page) {
+            Page.WIZARD -> PermissionWizardScreen(
+                onEnableAccessibilityViaShizuku = viewModel::forceEnableAccessibility,
+                onDone = { page = Page.HOME; viewModel.refresh() },
+            )
+            Page.TRANSPARENCY -> TransparencyScreen(deviceId = uiState.deviceId, onBack = { page = Page.HOME })
+            Page.HOME -> HomeScreen(
+                viewModel = viewModel,
+                onStartService = onStartService,
+                onStopService = onStopService,
+                onOpenWizard = { page = Page.WIZARD },
+                onOpenTransparency = { page = Page.TRANSPARENCY },
+            )
         }
     }
 }
 
 @Composable
-private fun SetupScreen(
+private fun HomeScreen(
+    viewModel: ControlledViewModel,
     onStartService: () -> Unit,
     onStopService: () -> Unit,
-    viewModel: ControlledViewModel = hiltViewModel(),
+    onOpenWizard: () -> Unit,
+    onOpenTransparency: () -> Unit,
 ) {
+    val ctx = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    val connection by viewModel.connectionState.collectAsState()
+    val quotas by viewModel.quotas.collectAsState()
+    val powerMode by viewModel.powerMode.collectAsState()
+    val requests by viewModel.extensionRequests.collectAsState()
+    val running by viewModel.serviceRunning.collectAsState()
+    val updateState by viewModel.updateState.collectAsState()
     var showManualPair by remember { mutableStateOf(false) }
+
+    // 从系统设置返回时重新检测权限
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var tick by remember { mutableIntStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_RESUME) { tick++; viewModel.refreshQuotas() }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val permItems = remember(tick) { PermissionChecker.check(ctx) }
+    val missing = permItems.filter { it.status == PermissionChecker.Status.MISSING }
 
     // ZXing 内嵌扫码(离线、免 GMS);结果文本交 ViewModel 解析并配对
     val qrScanLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         com.journeyapps.barcodescanner.ScanContract()
-    ) { result ->
-        if (!result.contents.isNullOrEmpty()) {
-            viewModel.pairViaQrRaw(result.contents)
-        }
-    }
+    ) { result -> if (!result.contents.isNullOrEmpty()) viewModel.pairViaQrRaw(result.contents) }
     val launchQrScan = {
         qrScanLauncher.launch(
             com.journeyapps.barcodescanner.ScanOptions().apply {
@@ -129,8 +210,7 @@ private fun SetupScreen(
         )
     }
 
-    // 配对成功后:关闭手动输入对话框,并自动拉起 Agent 服务(服务可能在配对前已 idle 启动,
-    // 会经 onStartCommand 重载配置连 MQTT)
+    // 配对成功后关闭手动对话框,并自动拉起 Agent 服务
     var wasPaired by remember { mutableStateOf(uiState.paired) }
     LaunchedEffect(uiState.paired) {
         if (uiState.paired) {
@@ -143,112 +223,251 @@ private fun SetupScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp)
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
-            text = stringResourceSafe(R.string.app_name),
-            color = AppColors.textPrimary,
-            fontSize = 24.sp,
+            text = ctx.getString(R.string.app_name),
+            style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.SemiBold,
         )
 
-        PairingCard(
-            paired = uiState.paired,
-            deviceId = uiState.deviceId,
-            pairing = uiState.pairing,
-            pairError = uiState.pairError,
-            onScan = launchQrScan,
-            onManual = { showManualPair = true },
-        )
-
+        if (!uiState.paired) {
+            PairingCard(
+                pairing = uiState.pairing,
+                pairError = uiState.pairError,
+                onScan = launchQrScan,
+                onManual = { showManualPair = true },
+            )
+        }
         if (showManualPair) {
             ManualPairDialog(
                 busy = uiState.pairing,
                 onDismiss = { showManualPair = false },
-                onConfirm = { serverUrl, pairToken, deviceId ->
-                    viewModel.pairManual(serverUrl, pairToken, deviceId)
-                },
+                onConfirm = { serverUrl, pairToken, deviceId -> viewModel.pairManual(serverUrl, pairToken, deviceId) },
             )
         }
 
-        CapabilityChecklist(
-            caps = uiState.capabilities,
-            a11yMsg = uiState.a11yMsg,
-            onEnableAccessibility = viewModel::forceEnableAccessibility,
+        ConnectionCard(
+            paired = uiState.paired,
+            deviceId = uiState.deviceId,
+            running = running,
+            state = connection,
+            powerMode = powerMode,
+            onStart = onStartService,
+            onStop = onStopService,
         )
 
-        // OTA 更新卡片:当前版本 + 流程状态 + 手动检查
-        val updateState by viewModel.updateState.collectAsState()
-        UpdateCard(
-            state = updateState,
-            currentVersion = com.adbcontrol.controlled.BuildConfig.VERSION_NAME,
-            onCheck = viewModel::checkUpdateNow,
+        PermissionSummaryCard(missingCount = missing.size, missingTitles = missing.map { it.title }, onOpen = onOpenWizard)
+
+        ActiveControlsCard(quotas = quotas)
+
+        TodayRemainingCard(quotas = quotas, requests = requests)
+
+        BigCard(
+            icon = Icons.Filled.Shield,
+            title = "本设备受管理",
+            container = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Text(ManagedCapabilities.summary(ctx), style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onOpenTransparency) { Text("查看全部管理能力") }
+        }
+
+        UpdateCard(state = updateState, currentVersion = com.adbcontrol.controlled.BuildConfig.VERSION_NAME, onCheck = viewModel::checkUpdateNow)
+
+        if (PermissionChecker.isMiuiFamily()) {
+            TextButton(onClick = { OemBatterySettings.openMiuiGodMode(ctx) }) { Text("MIUI 省电策略 / 应用权限详情") }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+// ---------- 卡片 ----------
+
+@Composable
+private fun BigCard(
+    icon: ImageVector,
+    title: String,
+    container: Color,
+    iconTint: Color = MaterialTheme.colorScheme.primary,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = container),
+    ) {
+        Column(Modifier.padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, tint = iconTint, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.size(12.dp))
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.height(12.dp))
+            content()
+        }
+    }
+}
+
+@Composable
+private fun ConnectionCard(
+    paired: Boolean,
+    deviceId: String,
+    running: Boolean,
+    state: MqttManager.ConnectionState,
+    powerMode: PowerPolicy.Mode,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val (icon, label, color) = when {
+        !paired -> Triple(Icons.Filled.CloudOff, "未配对", MaterialTheme.colorScheme.outline)
+        state == MqttManager.ConnectionState.CONNECTED -> Triple(Icons.Filled.CloudDone, "已连接", StatusColors.ok)
+        state == MqttManager.ConnectionState.CONNECTING || state == MqttManager.ConnectionState.RECONNECTING ->
+            Triple(Icons.Filled.CloudSync, "连接中…", StatusColors.warn)
+        else -> Triple(Icons.Filled.CloudOff, if (running) "连接断开" else "服务未运行", MaterialTheme.colorScheme.error)
+    }
+    BigCard(icon = icon, title = "连接状态", container = MaterialTheme.colorScheme.primaryContainer, iconTint = color) {
+        Text(label, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = color)
+        if (paired) {
+            Text("设备 ID:$deviceId", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer)
+        }
+        if (powerMode != PowerPolicy.Mode.NORMAL) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.BatterySaver, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.size(6.dp))
+                Text(
+                    if (powerMode == PowerPolicy.Mode.LOW_BATTERY) "省电模式:电量低于 20%,已降低定位与心跳频率"
+                    else "省电模式:设备静止,已降低定位频率",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        if (paired) {
+            if (running) OutlinedButton(onClick = onStop) { Text("停止服务") }
+            else Button(onClick = onStart) { Text("启动服务") }
+        }
+    }
+}
+
+@Composable
+private fun PermissionSummaryCard(missingCount: Int, missingTitles: List<String>, onOpen: () -> Unit) {
+    val bad = missingCount > 0
+    BigCard(
+        icon = Icons.Filled.Security,
+        title = "权限自检",
+        container = if (bad) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        iconTint = if (bad) MaterialTheme.colorScheme.error else StatusColors.ok,
+    ) {
+        Text(
+            if (bad) "$missingCount 项缺失:${missingTitles.joinToString("、")}" else "全部授权已就绪",
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (bad) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface,
         )
+        Spacer(Modifier.height(8.dp))
+        FilledTonalButton(onClick = onOpen) { Text(if (bad) "去修复" else "重新检查") }
+    }
+}
 
-        OemKeepAliveCard()
+@Composable
+private fun ActiveControlsCard(quotas: List<AppTimeController.AppQuota>) {
+    val restricted = quotas.count { it.restricted }
+    val limits = quotas.count { it.limitMinutes != null }
+    val windows = quotas.count { it.window != null }
+    BigCard(icon = Icons.Filled.Block, title = "当前生效的管控", container = MaterialTheme.colorScheme.secondaryContainer) {
+        if (quotas.isEmpty()) {
+            Text("暂无应用时间管控", style = MaterialTheme.typography.bodyMedium)
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                Stat("$limits", "时长限制")
+                Stat("$windows", "禁用时段")
+                Stat("$restricted", "正在受限")
+            }
+        }
+    }
+}
 
-        Spacer(modifier = Modifier.height(8.dp))
+@Composable
+private fun Stat(value: String, label: String) {
+    Column {
+        Text(value, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text(label, style = MaterialTheme.typography.labelMedium)
+    }
+}
 
-        PrimaryButton(
-            text = if (uiState.serviceRunning)
-                stringResourceSafe(R.string.stop_agent)
-            else stringResourceSafe(R.string.start_agent),
-            enabled = uiState.paired,
-            onClick = { if (uiState.serviceRunning) onStopService() else onStartService() },
-        )
+@Composable
+private fun TodayRemainingCard(
+    quotas: List<AppTimeController.AppQuota>,
+    requests: Map<String, ExtensionRequestManager.RequestState>,
+) {
+    BigCard(icon = Icons.Filled.Timer, title = "今日剩余时间", container = MaterialTheme.colorScheme.tertiaryContainer) {
+        if (quotas.isEmpty()) {
+            Text("没有受限的应用", style = MaterialTheme.typography.bodyMedium)
+            return@BigCard
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            quotas.forEach { q ->
+                Column {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(q.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            when {
+                                q.inWindowNow -> "禁用时段中"
+                                q.remainingMinutes != null -> "剩 ${q.remainingMinutes} 分钟"
+                                else -> "不限时长"
+                            },
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (q.restricted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                    }
+                    if (q.limitMinutes != null && q.limitMinutes > 0) {
+                        LinearProgressIndicator(
+                            progress = { (q.usedMinutes.toFloat() / q.limitMinutes).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                            color = if (q.restricted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            "已用 ${q.usedMinutes} / ${q.limitMinutes} 分钟" + (if (q.bonusMinutes > 0) "(含额外 ${q.bonusMinutes})" else ""),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    q.window?.let { Text("禁用时段 $it", style = MaterialTheme.typography.bodySmall) }
+                    requests[q.pkg]?.takeIf { it.status == ExtensionRequestManager.Status.PENDING }?.let {
+                        Text("延时申请 ${it.minutes} 分钟 · 等待家长确认", style = MaterialTheme.typography.bodySmall,
+                            color = StatusColors.warn)
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
 private fun PairingCard(
-    paired: Boolean,
-    deviceId: String,
     pairing: Boolean,
     pairError: String?,
     onScan: () -> Unit,
     onManual: () -> Unit,
 ) {
-    GlassCard {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = stringResourceSafe(R.string.pair_title),
-                color = AppColors.cyan,
-                fontSize = 14.sp,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = if (paired)
-                    stringResourceSafe(R.string.pair_status_paired, deviceId)
-                else stringResourceSafe(R.string.pair_status_unpaired),
-                color = AppColors.textPrimary,
-                fontSize = 16.sp,
-            )
-            if (!paired) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onScan, enabled = !pairing) {
-                        Text(if (pairing) "配对中…" else stringResourceSafe(R.string.pair_scan_qr))
-                    }
-                    Button(onClick = onManual, enabled = !pairing) {
-                        Text("手动输入配对码")
-                    }
-                }
-            }
-            pairError?.let {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = it,
-                    color = AppColors.rose,
-                    fontSize = 12.sp,
-                )
-            }
+    BigCard(icon = Icons.Filled.QrCode, title = "设备配对", container = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Text("扫描 Web 控制台的配对二维码,或手动输入配对码。", style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onScan, enabled = !pairing) { Text(if (pairing) "配对中…" else "扫描配对二维码") }
+            OutlinedButton(onClick = onManual, enabled = !pairing) { Text("手动输入") }
+        }
+        pairError?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
-/** 手动配对:国行 ROM 无 Google Play Services 时 ML Kit 扫码不可用,走文本输入兜底。 */
+/** 手动配对:国行 ROM 无 Google Play Services 时走文本输入兜底。 */
 @Composable
 private fun ManualPairDialog(
     busy: Boolean,
@@ -259,241 +478,32 @@ private fun ManualPairDialog(
     var pairToken by remember { mutableStateOf("") }
     var deviceId by remember { mutableStateOf("") }
 
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("手动输入配对码", color = AppColors.textPrimary) },
+        title = { Text("手动输入配对码") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "在 Web 控制台「令牌管理」生成令牌后,将以下三项复制到本机输入。",
-                    color = AppColors.textSecondary,
-                    fontSize = 12.sp,
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = { serverUrl = it },
-                    label = { Text("服务器地址") },
-                    singleLine = true,
-                    enabled = !busy,
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    value = pairToken,
-                    onValueChange = { pairToken = it },
-                    label = { Text("配对令牌 (pt_ 开头)") },
-                    singleLine = true,
-                    enabled = !busy,
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    value = deviceId,
-                    onValueChange = { deviceId = it },
-                    label = { Text("设备 ID (dev_ 开头)") },
-                    singleLine = true,
-                    enabled = !busy,
-                )
+                Text("在 Web 控制台「令牌管理」生成令牌后,将以下三项复制到本机输入。", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(value = serverUrl, onValueChange = { serverUrl = it }, label = { Text("服务器地址") },
+                    singleLine = true, enabled = !busy)
+                OutlinedTextField(value = pairToken, onValueChange = { pairToken = it }, label = { Text("配对令牌 (pt_ 开头)") },
+                    singleLine = true, enabled = !busy)
+                OutlinedTextField(value = deviceId, onValueChange = { deviceId = it }, label = { Text("设备 ID (dev_ 开头)") },
+                    singleLine = true, enabled = !busy)
             }
         },
         confirmButton = {
             Button(
                 onClick = { onConfirm(serverUrl, pairToken, deviceId) },
                 enabled = !busy && serverUrl.isNotBlank() && pairToken.isNotBlank() && deviceId.isNotBlank(),
-            ) {
-                Text(if (busy) "配对中…" else "配对")
-            }
+            ) { Text(if (busy) "配对中…" else "配对") }
         },
-        dismissButton = {
-            Button(onClick = onDismiss, enabled = !busy) { Text("取消") }
-        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") } },
     )
 }
 
 /** 手动配对默认服务器地址;扫码路径的 serverUrl 来自 QR 载荷,不受此影响。 */
 private const val DEFAULT_SERVER_URL = "https://adbcontrol-backend.fly.dev"
-
-@Composable
-private fun CapabilityChecklist(
-    caps: List<CapabilityItem>,
-    a11yMsg: String?,
-    onEnableAccessibility: () -> Unit,
-) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
-
-    // 从系统设置授权返回(ON_RESUME)时递增 tick,触发重新检测
-    var tick by remember { mutableStateOf(0) }
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) tick++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    // 叠加系统级真实检测(无障碍/设备管理/使用情况/通知监听/电池白名单),并挂接跳转动作;
-    // 无障碍服务的动作覆盖为"一键开启"(Shizuku 直写设置,绕开只有快捷方式的界面)
-    val items = remember(caps, tick) {
-        caps.map { it.resolved(ctx) }.map { item ->
-            if (item.label == "无障碍服务") item.copy(action = { onEnableAccessibility() })
-            else item
-        }
-    }
-
-    GlassCard {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = stringResourceSafe(R.string.permission_check),
-                color = AppColors.cyan,
-                fontSize = 14.sp,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            items.forEach { item ->
-                CapabilityRow(item)
-                if (item.label == "无障碍服务") {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = (a11yMsg ?: "在“已安装的服务”列表里打开本应用的无障碍开关（不是快捷方式）"),
-                        color = AppColors.slate,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(start = 8.dp),
-                    )
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-        }
-    }
-}
-
-/** 用系统真实状态覆盖硬编码 false 的检测项,并按权限类型挂"去授权"跳转。 */
-private fun CapabilityItem.resolved(ctx: android.content.Context): CapabilityItem {
-    val granted: Boolean? = when (label) {
-        "无障碍服务" -> {
-            val enabled = android.provider.Settings.Secure.getString(
-                ctx.contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-            ).orEmpty()
-            enabled.contains("ControlledAccessibilityService")
-        }
-        "设备管理" -> {
-            val dpm = ctx.getSystemService(android.content.Context.DEVICE_POLICY_SERVICE)
-                as android.app.admin.DevicePolicyManager
-            dpm.isAdminActive(
-                android.content.ComponentName(ctx, com.adbcontrol.controlled.admin.ControlledDeviceAdminReceiver::class.java)
-            )
-        }
-        "使用情况访问" -> {
-            val appOps = ctx.getSystemService(android.content.Context.APP_OPS_SERVICE) as android.app.AppOpsManager
-            appOps.unsafeCheckOpNoThrow(
-                android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
-                android.os.Process.myUid(), ctx.packageName,
-            ) == android.app.AppOpsManager.MODE_ALLOWED
-        }
-        "电池白名单" -> {
-            val pm = ctx.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
-            pm.isIgnoringBatteryOptimizations(ctx.packageName)
-        }
-        else -> null
-    }
-    val action: ((android.content.Context) -> Unit)? = when (label) {
-        "Shizuku 桥接" -> { c ->
-            // 已安装则拉起 Shizuku 授权;未安装则跳应用商店页
-            c.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")?.let {
-                runCatching { c.startActivity(it) }
-            } ?: runCatching {
-                c.startActivity(
-                    android.content.Intent(
-                        android.content.Intent.ACTION_VIEW,
-                        android.net.Uri.parse("market://details?id=moe.shizuku.privileged.api")
-                    )
-                )
-            }
-        }
-"无障碍服务" -> { c ->
-            // 深链定位到本服务详情页:部分 ROM 支持通过 extra 直接跳到目标服务的无障碍开关页
-            val deepLink = android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                putExtra(
-                    "android.intent.extra.COMPONENT_NAME",
-                    android.content.ComponentName(
-                        c, com.adbcontrol.controlled.accessibility.ControlledAccessibilityService::class.java
-                    ).flattenToString(),
-                )
-            }
-runCatching { c.startActivity(deepLink) }
-                .onFailure { runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)) } }
-        }
-        "设备管理" -> { c ->
-            runCatching {
-                c.startActivity(
-                    android.content.Intent(android.app.admin.DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
-                        putExtra(
-                            android.app.admin.DevicePolicyManager.EXTRA_DEVICE_ADMIN,
-                            android.content.ComponentName(c, com.adbcontrol.controlled.admin.ControlledDeviceAdminReceiver::class.java),
-                        )
-                        putExtra(
-                            android.app.admin.DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                            "激活设备管理以支持远程锁屏等控制指令",
-                        )
-                    }
-                )
-            }
-        }
-        "使用情况访问" -> { c ->
-            runCatching { c.startActivity(android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
-        }
-        "电池白名单" -> { c ->
-            runCatching {
-                c.startActivity(
-                    android.content.Intent(
-                        android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                        android.net.Uri.parse("package:${c.packageName}"),
-                    )
-                )
-            }
-        }
-        else -> null
-    }
-    return copy(granted = granted ?: this.granted, action = action)
-}
-
-@Composable
-private fun OemKeepAliveCard() {
-    // README 3.1 L8:厂商后台保活跳转。国产 ROM 主动杀后台,需引导用户去自启管理 / 神隐模式
-    // 等系统页手动加白名单。跳转失败回退应用详情(由 OemBatterySettings 内部处理)。
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val isMiui = OemHelper.isMiui()
-    val label = when (OemHelper.oem) {
-        OemHelper.Oem.XIAOMI -> "MIUI 自启动管理"
-        OemHelper.Oem.HUAWEI -> "EMUI / 鸿蒙 自启动管理"
-        OemHelper.Oem.OPPO -> "ColorOS 自启动管理"
-        OemHelper.Oem.VIVO -> "OriginOS 后台管理"
-        OemHelper.Oem.MEIZU -> "Flyme 后台管理"
-        OemHelper.Oem.SAMSUNG -> "省电模式详情"
-        OemHelper.Oem.OTHER -> "应用详情"
-    }
-    GlassCard {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "厂商后台保活",
-                color = AppColors.cyan,
-                fontSize = 14.sp,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "国产 ROM 会主动杀后台,请在打开的页面中允许本应用后台运行 / 自启动 / " +
-                    "加入受保护名单,否则 MQTT 长连接会被断。",
-                color = AppColors.textSecondary,
-                fontSize = 12.sp,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Button(onClick = { OemBatterySettings.openAutoStart(ctx) }) {
-                Text(label)
-            }
-            if (isMiui) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(onClick = { OemBatterySettings.openMiuiGodMode(ctx) }) {
-                    Text("MIUI 神隐模式 / 应用锁")
-                }
-            }
-        }
-    }
-}
 
 /** OTA 更新卡片:展示当前版本、检查/下载/安装进度与手动触发入口。 */
 @Composable
@@ -502,144 +512,29 @@ private fun UpdateCard(
     currentVersion: String,
     onCheck: () -> Unit,
 ) {
-    GlassCard {
-        Column(modifier = Modifier.padding(16.dp)) {
+    BigCard(icon = Icons.Filled.SystemUpdate, title = "应用更新", container = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Text("当前版本 v$currentVersion", style = MaterialTheme.typography.bodySmall)
+        if (state.statusText.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
             Text(
-                text = "应用更新",
-                color = AppColors.cyan,
-                fontSize = 14.sp,
+                state.statusText,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (state.lastError != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = "当前版本 v$currentVersion",
-                color = AppColors.textSecondary,
-                fontSize = 12.sp,
-            )
-            if (state.statusText.isNotBlank()) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = state.statusText,
-                    color = if (state.lastError != null) AppColors.rose else AppColors.textSecondary,
-                    fontSize = 12.sp,
-                )
-            }
-            if (state.progress >= 0) {
-                Spacer(modifier = Modifier.height(8.dp))
-                @Suppress("DEPRECATION")
-                androidx.compose.material3.LinearProgressIndicator(
-                    progress = state.progress / 100f,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Button(onClick = onCheck, enabled = !state.busy) {
-                Text(if (state.busy) "处理中…" else "立即检查更新")
-            }
         }
+        if (state.progress >= 0) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(progress = { state.progress / 100f }, modifier = Modifier.fillMaxWidth())
+        }
+        Spacer(Modifier.height(12.dp))
+        FilledTonalButton(onClick = onCheck, enabled = !state.busy) { Text(if (state.busy) "处理中…" else "立即检查更新") }
     }
 }
 
-@Composable
-private fun CapabilityRow(item: CapabilityItem) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            StatusDot(granted = item.granted)
-            Spacer(modifier = Modifier.size(12.dp))
-            Text(item.label, color = AppColors.textSecondary, fontSize = 14.sp)
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = item.badge,
-                color = if (item.badge == "MUST") AppColors.magenta else AppColors.slate,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(modifier = Modifier.size(12.dp))
-            Text(
-                text = if (item.granted) stringResourceSafe(R.string.status_granted)
-                else stringResourceSafe(R.string.status_denied),
-                color = if (item.granted) AppColors.emerald else AppColors.rose,
-                fontSize = 12.sp,
-            )
-            if (!item.granted && item.action != null) {
-                Spacer(modifier = Modifier.size(8.dp))
-                Text(
-                    text = "去授权",
-                    color = AppColors.cyan,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clickable { item.action?.invoke(ctx) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun StatusDot(granted: Boolean) {
-    Box(
-        modifier = Modifier
-            .size(8.dp)
-            .clip(CircleShape)
-            .background(if (granted) AppColors.emerald else AppColors.rose)
-    )
-}
-
-@Composable
-private fun GlassCard(content: @Composable () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(24.dp))
-            .background(AppColors.glassBg)
-            .padding(0.dp),
-    ) { content() }
-}
-
-@Composable
-private fun PrimaryButton(text: String, enabled: Boolean, onClick: () -> Unit) {
-    val bg = Brush.linearGradient(listOf(AppColors.cyan, AppColors.magenta))
-    val disabled = Brush.linearGradient(listOf(AppColors.glassBgStrong, AppColors.glassBgStrong))
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (enabled) bg else disabled)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Button(
-            onClick = onClick,
-            enabled = enabled,
-            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            Text(
-                text = text,
-                color = if (enabled) AppColors.bgDeep else AppColors.textDisabled,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-    }
-}
-
-@Composable
-private fun stringResourceSafe(id: Int, vararg args: Any): String {
-    // 用 LocalContext 直接取 String,避免在 Composable 调用上包 try/catch(编译器禁止)。
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    return runCatching { ctx.getString(id, *args) }.getOrDefault(ctx.getString(id))
-}
-
+/** 旧版权限清单数据结构(ViewModel 仍在构建,保留以兼容)。 */
 data class CapabilityItem(
     val label: String,
     val granted: Boolean,
     val badge: String,
-    /** 未授权时的"去授权"跳转动作(打开对应系统设置页);null 表示无可引导入口(如 Root) */
     val action: ((android.content.Context) -> Unit)? = null,
 )

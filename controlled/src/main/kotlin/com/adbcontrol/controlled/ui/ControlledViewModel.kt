@@ -33,7 +33,25 @@ class ControlledViewModel @Inject constructor(
     private val pairingScanner: PairingScanner,
     private val pairingClient: PairingClient,
     private val updateRunner: UpdateRunner,
+    mqttManager: com.adbcontrol.controlled.net.MqttManager,
+    private val appTimeController: com.adbcontrol.controlled.apptime.AppTimeController,
+    powerPolicy: com.adbcontrol.controlled.telemetry.PowerPolicy,
+    extensionRequestManager: com.adbcontrol.controlled.apptime.ExtensionRequestManager,
 ) : ViewModel() {
+
+    // ---------- v2.0 首页状态流 ----------
+    /** MQTT 连接状态(连接状态大卡片) */
+    val connectionState = mqttManager.connectionState
+    /** 受管 App 今日配额(今日剩余时长卡片) */
+    val quotas = appTimeController.quotas
+    /** 省电模式 */
+    val powerMode = powerPolicy.mode
+    /** 延时申请状态 */
+    val extensionRequests = extensionRequestManager.requests
+    /** 服务运行状态 */
+    val serviceRunning = com.adbcontrol.controlled.service.ControlledService.running
+
+    fun refreshQuotas() = appTimeController.refreshNow()
 
     /** OTA 更新流程状态(供"应用更新"卡片实时展示)。 */
     val updateState: kotlinx.coroutines.flow.StateFlow<UpdateRunner.UpdateUiState> = updateRunner.state
@@ -74,7 +92,7 @@ class ControlledViewModel @Inject constructor(
             val state = UiState(
                 paired = config != null,
                 deviceId = config?.deviceId.orEmpty(),
-                serviceRunning = false, // TODO: 观察 ControlledService 生命周期
+                serviceRunning = com.adbcontrol.controlled.service.ControlledService.running.value,
                 capabilities = caps,
             )
             withContext(Dispatchers.Main) {
