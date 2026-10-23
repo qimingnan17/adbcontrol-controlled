@@ -27,6 +27,8 @@ object MqttTopics {
     const val LOCATION_PREFIX = "location/"
     const val ACTIVITY_PREFIX = "activity/"
     const val USAGE_PREFIX = "usage/"
+    /** v2.0 契约 §3:被控端 → 后端 请求类消息(EXTENSION_REQUEST) */
+    const val REQUEST_PREFIX = "request/"
 
     // LWT
     const val DEVICE_OFFLINE_PREFIX = "device/offline/"
@@ -43,6 +45,7 @@ object MqttTopics {
     fun location(deviceId: String) = "$LOCATION_PREFIX$deviceId"
     fun activity(deviceId: String) = "$ACTIVITY_PREFIX$deviceId"
     fun usage(deviceId: String) = "$USAGE_PREFIX$deviceId"
+    fun request(deviceId: String) = "$REQUEST_PREFIX$deviceId"
     fun deviceOffline(deviceId: String) = "$DEVICE_OFFLINE_PREFIX$deviceId"
     fun controllerOffline(controllerId: String) = "$CONTROLLER_OFFLINE_PREFIX$controllerId"
 

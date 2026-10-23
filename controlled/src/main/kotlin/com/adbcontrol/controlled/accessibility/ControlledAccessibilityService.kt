@@ -3,7 +3,9 @@ package com.adbcontrol.controlled.accessibility
 import android.accessibilityservice.AccessibilityService
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import com.adbcontrol.controlled.apptime.AppTimeController
 import com.adbcontrol.controlled.telemetry.TelemetryEngine
+import com.adbcontrol.controlled.ui.intercept.InterceptActivity
 import com.adbcontrol.shared.model.ActivityReport.ActivityEvent
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -23,6 +25,11 @@ import javax.inject.Inject
 class ControlledAccessibilityService : AccessibilityService() {
 
     @Inject lateinit var telemetryEngine: TelemetryEngine
+    @Inject lateinit var appTimeController: AppTimeController
+
+    /** 拦截页防抖:同一包 [INTERCEPT_DEBOUNCE_MS] 内只拉起一次 */
+    @Volatile private var lastInterceptPkg: String? = null
+    @Volatile private var lastInterceptAt: Long = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -39,11 +46,55 @@ class ControlledAccessibilityService : AccessibilityService() {
                 val eventClass = event.className?.toString()
                 Log.d(TAG, "window changed pkg=$pkg class=$eventClass")
                 telemetryEngine.reportActivity(pkg, ActivityEvent.APP_FOREGROUND)
+                runCatching { maybeIntercept(pkg, eventClass) }
+                    .onFailure { Log.w(TAG, "intercept check failed", it) }
             }
             AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED -> {
                 // 忽略通知事件
             }
         }
+    }
+
+    /**
+     * v2.0 拦截页:用户打开受限 App 时,展示友好的全屏页(解封时间 / 剩余额度 / 申请延时)。
+     *
+     * 两种入口:
+     * 1. 受限 App 本身到前台(suspend 未成功,如无 Shizuku)→ 直接拦截该包
+     * 2. 系统"应用已暂停"对话框(package=android,SuspendedAppActivity)→ 在对话框文字中匹配受限 App 名称
+     *
+     * 无障碍服务被系统绑定,属后台启动 Activity 豁免;MIUI/HyperOS 仍需"后台弹出界面"权限(权限自检向导引导)。
+     */
+    private fun maybeIntercept(pkg: String, eventClass: String?) {
+        val target: String? = when {
+            appTimeController.isRestricted(pkg) -> pkg
+            pkg == "android" && (eventClass?.contains("Suspend", ignoreCase = true) == true ||
+                eventClass?.contains("AlertDialog", ignoreCase = true) == true) -> findSuspendedFromDialog()
+            else -> null
+        }
+        if (target == null) return
+        val now = System.currentTimeMillis()
+        if (target == lastInterceptPkg && now - lastInterceptAt < INTERCEPT_DEBOUNCE_MS) return
+        lastInterceptPkg = target
+        lastInterceptAt = now
+        Log.i(TAG, "intercept restricted app $target")
+        if (pkg == "android") {
+            // 关掉系统暂停对话框,再展示我们的页面
+            runCatching { performGlobalAction(GLOBAL_ACTION_BACK) }
+        }
+        InterceptActivity.launch(this, target)
+    }
+
+    /** 在当前窗口文字里查找受限 App 的名称(系统暂停对话框标题含 App 名)。 */
+    private fun findSuspendedFromDialog(): String? {
+        val restricted = appTimeController.restrictedPackages()
+        if (restricted.isEmpty()) return null
+        val root = rootInActiveWindow ?: return null
+        for (p in restricted) {
+            val label = appTimeController.labelOf(p)
+            if (label.isBlank() || label == p) continue
+            if (root.findAccessibilityNodeInfosByText(label).isNotEmpty()) return p
+        }
+        return null
     }
 
     override fun onInterrupt() {
@@ -67,5 +118,8 @@ class ControlledAccessibilityService : AccessibilityService() {
         return super.onUnbind(intent)
     }
 
-    companion object { private const val TAG = "ControlledA11y" }
+    companion object {
+        private const val TAG = "ControlledA11y"
+        private const val INTERCEPT_DEBOUNCE_MS = 2_500L
+    }
 }

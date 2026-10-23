@@ -1,8 +1,11 @@
 package com.adbcontrol.controlled.net
 
 import com.adbcontrol.shared.MessageType
+import com.adbcontrol.shared.ProtocolVersion
 import com.adbcontrol.shared.WsMessage
 import com.adbcontrol.shared.security.HmacSigner
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -20,6 +23,7 @@ import kotlinx.serialization.json.Json
  * [WsMessage.type] 序列化得到;接收时由 [decode] 还原为 [MessageType],未知类型(遥测/
  * 配对/更新)在 shared 中未声明时,落入 [MessageType.PUSH_DATA] 兜底(由 topic 路由)。
  */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class MqttEnvelope(
     val id: String,
@@ -27,6 +31,8 @@ data class MqttEnvelope(
     val payload: String,
     val timestamp: Long,
     val signature: String? = null,
+    /** v2.0 契约 §1:发送恒为 2;接收缺失视为 1(见 [ProtocolVersion.detect])。不参与签名,兼容 v1 验签。 */
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 )
 
 /**
@@ -48,6 +54,7 @@ class MessageCodec(
             payload = message.payload,
             timestamp = message.timestamp,
             signature = signature,
+            protocolVersion = ProtocolVersion.CURRENT,
         )
         return json.encodeToString(MqttEnvelope.serializer(), envelope).toByteArray(Charsets.UTF_8)
     }
@@ -60,8 +67,9 @@ class MessageCodec(
      * 配对前(sessionKey == null)宽松放行,仅做反序列化。
      */
     fun decode(bytes: ByteArray, sessionKeyBase64: String?): WsMessage? {
+        val raw = String(bytes, Charsets.UTF_8)
         val envelope = runCatching {
-            json.decodeFromString(MqttEnvelope.serializer(), String(bytes, Charsets.UTF_8))
+            json.decodeFromString(MqttEnvelope.serializer(), raw)
         }.getOrElse {
             // 排障可观测:此前静默返回 null,链路故障(如主控端 payload 字段错发 Base64)无从定位。
             // 只记原因,不落 payload/密钥内容。
@@ -87,12 +95,24 @@ class MessageCodec(
                 return null
             }
         }
-        val type = runCatching { MessageType.valueOf(envelope.type) }.getOrDefault(MessageType.PUSH_DATA)
+        // 协议版本:缺失字段 = v1(旧后端/旧主控),记录并容忍;只有不可解析才在上面被拒
+        val version = ProtocolVersion.detect(raw) ?: ProtocolVersion.LEGACY
+        if (ProtocolVersion.isOlder(version)) {
+            android.util.Log.i("MessageCodec", "legacy envelope v$version tolerated (id=${envelope.id}, type=${envelope.type})")
+        }
+        val type = parseType(envelope.type)
         return WsMessage(
             id = envelope.id,
             type = type,
             payload = envelope.payload,
             timestamp = envelope.timestamp,
+            protocolVersion = version,
         )
+    }
+
+    /** 信封 type 字符串 → 枚举;大小写/中划线容错,未知类型兜底 PUSH_DATA(由 topic 路由)。 */
+    private fun parseType(raw: String): MessageType {
+        val norm = raw.trim().uppercase().replace('-', '_')
+        return runCatching { MessageType.valueOf(norm) }.getOrDefault(MessageType.PUSH_DATA)
     }
 }

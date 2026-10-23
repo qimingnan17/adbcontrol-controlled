@@ -10,7 +10,9 @@ import android.os.Bundle
 import android.util.Log
 import com.adbcontrol.controlled.net.MqttManager
 import com.adbcontrol.shared.MessageType
+import com.adbcontrol.shared.model.GeofenceDef
 import com.adbcontrol.shared.model.LocationReport
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 /**
@@ -36,10 +38,30 @@ class LocationReporter(
     @Volatile private var lastLat: Double = 0.0
     @Volatile private var lastLng: Double = 0.0
 
-    /** 围栏列表(lat,lng,radius,label)。主控下发,存内存(后续接入 Room fence 表)。 */
+    /**
+     * 围栏列表(lat,lng,radius,label)。v2.0:由 GEOFENCE_SET(契约 §5)全量下发,
+     * 持久化到 SharedPreferences,进程重启后自动恢复。
+     */
     private val fences = mutableListOf<Geofence>()
 
     data class Geofence(val lat: Double, val lng: Double, val radiusMeters: Float, val label: String)
+
+    private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+
+    /** 最近一次上报的定位(供 [PowerPolicy] 静止判定)。 */
+    @Volatile var lastReportedLocation: Location? = null
+        private set
+
+    init {
+        runCatching {
+            val raw = prefs.getString(KEY_FENCES, null)
+            if (!raw.isNullOrBlank()) {
+                val defs = json.decodeFromString(ListSerializer(GeofenceDef.serializer()), raw)
+                setFences(defs.map { it.toGeofence() })
+                Log.i(TAG, "restored ${defs.size} geofences")
+            }
+        }.onFailure { Log.w(TAG, "restore geofences failed", it) }
+    }
 
     fun setFences(fences: List<Geofence>) {
         synchronized(this.fences) {
@@ -48,9 +70,31 @@ class LocationReporter(
         }
     }
 
+    /** GEOFENCE_SET:校验 → 持久化 → 应用(全量替换)。返回生效数量。 */
+    fun applyGeofences(defs: List<GeofenceDef>): Int {
+        val valid = defs.filter {
+            it.lat in -90.0..90.0 && it.lng in -180.0..180.0 && it.radiusMeters > 0 && it.radiusMeters <= 100_000
+        }
+        prefs.edit().putString(KEY_FENCES, json.encodeToString(ListSerializer(GeofenceDef.serializer()), valid)).apply()
+        setFences(valid.map { it.toGeofence() })
+        Log.i(TAG, "geofences applied: ${valid.size}/${defs.size}")
+        return valid.size
+    }
+
+    /** 当前生效的围栏数量(UI 透明度页展示)。 */
+    fun fenceCount(): Int = synchronized(fences) { fences.size }
+
+    private fun GeofenceDef.toGeofence() = Geofence(
+        lat = lat,
+        lng = lng,
+        radiusMeters = radiusMeters.toFloat(),
+        label = name.ifBlank { if (id != 0L) "fence-$id" else "fence" },
+    )
+
     /** 周期上报:取最近一次已知位置(被动),发 QoS 0(若检测到围栏事件则以 QoS 1 确保触达)。 */
     fun reportOnce(deviceId: String): Boolean {
         val loc = lastKnownLocation() ?: return false
+        lastReportedLocation = loc
         val fence = checkFence(loc.latitude, loc.longitude)
         val qos = if (fence != null) 1 else 0
         return publish(deviceId, loc, provider = loc.provider ?: "unknown", fenceEvent = fence, qos = qos)
@@ -139,5 +183,9 @@ class LocationReporter(
         return null
     }
 
-    companion object { private const val TAG = "LocationReporter" }
+    companion object {
+        private const val TAG = "LocationReporter"
+        private const val PREFS = "geofences"
+        private const val KEY_FENCES = "fences_json"
+    }
 }

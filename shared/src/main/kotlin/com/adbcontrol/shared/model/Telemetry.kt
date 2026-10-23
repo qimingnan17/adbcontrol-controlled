@@ -1,6 +1,9 @@
 package com.adbcontrol.shared.model
 
 import kotlinx.serialization.SerialName
+import com.adbcontrol.shared.ProtocolVersion
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 
 /**
@@ -9,6 +12,7 @@ import kotlinx.serialization.Serializable
  */
 
 // ---------- 5.1 状态回报(status/{deviceId}) ----------
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class StatusReport(
     val deviceId: String,
@@ -24,6 +28,7 @@ data class StatusReport(
     @SerialName("foregroundPkg")
     val foregroundPackage: String? = null,     // 当前前台 App 包名
     val timestamp: Long,
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 ) {
     enum class NetworkType { WIFI, CELLULAR_2G, CELLULAR_3G, CELLULAR_4G, CELLULAR_5G, NONE }
 }
@@ -38,6 +43,7 @@ data class BatterySnapshot(
 )
 
 // ---------- 5.3 位置(location/{deviceId}) ----------
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class LocationReport(
     val deviceId: String,
@@ -52,9 +58,11 @@ data class LocationReport(
     /** 触发围栏事件名,无则 null */
     val fenceEvent: String? = null,
     val timestamp: Long,
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 )
 
 // ---------- 5.4 应用行为(activity/{deviceId}) ----------
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ActivityReport(
     val deviceId: String,
@@ -65,6 +73,7 @@ data class ActivityReport(
     /** 前台持续时间(毫秒),APP_BACKGROUND 时填 */
     val durationMs: Long = 0,
     val timestamp: Long,
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 ) {
     enum class ActivityEvent {
         APP_FOREGROUND,                        // 应用切到前台
@@ -74,6 +83,7 @@ data class ActivityReport(
 }
 
 // ---------- 使用时长聚合(usage/{deviceId},整点上报,错峰) ----------
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class UsageReport(
     val deviceId: String,
@@ -82,6 +92,12 @@ data class UsageReport(
     /** 单条 = 一台设备一天一用户的多 App 时长 */
     val items: List<UsageItem>,
     val timestamp: Long,
+    /**
+     * v2.0 契约 §4:15 分钟一次的"当日累计"准实时上报置 true;整点全量上报为 false。
+     * 后端按 (device_id, date, package_name) upsert 取最大值。
+     */
+    val partial: Boolean = false,
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 )
 
 @Serializable
@@ -94,6 +110,7 @@ data class UsageItem(
 )
 
 // ---------- 5.5 设备健康(health/{deviceId}) ----------
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class HealthReport(
     val deviceId: String,
@@ -108,6 +125,7 @@ data class HealthReport(
     val androidVersion: String,
     val appVersion: String,
     val timestamp: Long,
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 ) {
     enum class ShizukuState { CONNECTED, NOT_AUTHORIZED, NOT_INSTALLED, UNSUPPORTED }
 }

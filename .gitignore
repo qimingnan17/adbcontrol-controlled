@@ -15,3 +15,9 @@ out/
 *.iml
 .DS_Store
 .mimosa/
+
+# v2.0:签名文件绝不入库(CI 从 Secret SIGNING_KEYSTORE_BASE64 解码)
+*.keystore
+*.jks
+keystore/
+.kotlin/

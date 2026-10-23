@@ -32,8 +32,12 @@ data class UpdateCheckResponse(
     val patchUrl: String? = null,
     val patchFromVersionCode: Int = 0,
     val patchToVersionCode: Int = 0,
-    /** sha256 校验,下载后必须验 */
-    val sha256: String = "",
+    /**
+     * APK 的 SHA-256(小写 hex,64 字符)。v2.0 契约 §2:可空(旧清单行无此值)。
+     * 有值时下载后必须校验,不一致 → 删除文件并上报 UPDATE_HASH_MISMATCH,不安装;
+     * 缺失时允许安装但记录警告。
+     */
+    val sha256: String? = null,
     val sizeBytes: Long = 0,
     val forceUpdate: Boolean = false,
 ) {

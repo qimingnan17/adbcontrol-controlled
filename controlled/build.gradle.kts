@@ -27,22 +27,35 @@ android {
         }
     }
 
+    // v2.0 签名:keystore 不再入库,从环境变量读取(CI 由 Secret SIGNING_KEYSTORE_BASE64 解码得到文件)。
+    //   SIGNING_KEYSTORE_PATH / SIGNING_STORE_PASSWORD / SIGNING_KEY_ALIAS / SIGNING_KEY_PASSWORD
+    // 未提供时:debug 回退 AGP 默认调试签名(~/.android/debug.keystore);release 同样回退并打印警告
+    // (CI 在 workflow 中强制校验 Secret 存在,防止发布出签名不一致、无法覆盖安装的包)。
+    // ⚠️ 未轮换密钥:CI Secret 必须是原 keystore/debug.keystore 的 base64,否则现网设备 OTA 会签名不一致。
+    val signingKeystorePath: String? = System.getenv("SIGNING_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+    val hasEnvSigning = signingKeystorePath != null && file(signingKeystorePath).exists() &&
+        !System.getenv("SIGNING_STORE_PASSWORD").isNullOrEmpty() &&
+        !System.getenv("SIGNING_KEY_ALIAS").isNullOrEmpty()
     signingConfigs {
-        // 固定调试签名入库(个人项目):GitHub Actions runner 每次构建都会随机生成
-        // debug.keystore,导致 CI 各版本之间、CI 与本地构建之间签名互不相同,
-        // OTA 覆盖安装必报 INSTALL_FAILED_UPDATE_INCOMPATIBLE —— 此前从未暴露,
-        // 是因为 OTA 从未成功走到安装阶段。入库后本地与 CI 统一。
-        getByName("debug") {
-            storeFile = rootProject.file("keystore/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (hasEnvSigning) {
+            create("env") {
+                storeFile = file(signingKeystorePath!!)
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")?.takeIf { it.isNotEmpty() }
+                    ?: System.getenv("SIGNING_STORE_PASSWORD")
+            }
         }
+    }
+    if (!hasEnvSigning) {
+        logger.warn("SIGNING_KEYSTORE_PATH 等签名环境变量未配置,构建将使用 AGP 默认调试签名(不可用于覆盖现网设备)")
     }
 
     buildTypes {
         debug {
             isMinifyEnabled = false
+            // 有环境签名时 debug 也用它(便于本地覆盖安装现网设备);否则默认调试签名
+            if (hasEnvSigning) signingConfig = signingConfigs.getByName("env")
         }
         release {
             // 任务 9:MIUI 安装包优化,启用 R8 代码压缩 + 资源压缩,降低 APK 体积。
@@ -54,10 +67,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // OTA 要求签名一致:release 沿用入库的固定 debug 签名,才能覆盖安装现网设备
-            // 上的既有包(否则 INSTALL_FAILED_UPDATE_INCOMPATIBLE)。CI 已从 assembleDebug
-            // 切到 assembleRelease:R8 后体积从 ~82MB 降到 ~11MB,fly 免费机中转不再被打爆。
-            signingConfig = signingConfigs.getByName("debug")
+            // OTA 要求签名一致:release 使用环境变量提供的固定签名(CI 从 Secret 解码),
+            // 才能覆盖安装现网设备上的既有包(否则 INSTALL_FAILED_UPDATE_INCOMPATIBLE)。
+            signingConfig = if (hasEnvSigning) signingConfigs.getByName("env") else signingConfigs.getByName("debug")
         }
     }
 

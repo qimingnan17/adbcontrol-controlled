@@ -42,7 +42,10 @@ class UsageReporter(
     private val prefs by lazy { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
 
     /** 采集当日各 App 使用时长并上报。 */
-    fun reportOnce(deviceId: String, userId: String = "0"): Boolean {
+    /**
+     * @param partial v2.0 契约 §4:15 分钟准实时上报置 true(仅附已上传过的图标 URL,不触发新上传,省流量/R2 请求)
+     */
+    fun reportOnce(deviceId: String, userId: String = "0", partial: Boolean = false): Boolean {
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val cal = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 0)
@@ -75,19 +78,26 @@ class UsageReporter(
         val r2 = if (r2cfg != null && r2cfg.publicRead) {
             runCatching { R2StorageClient(r2cfg) }.getOrNull()
         } else null
+        val uploaded = prefs.getStringSet(UPLOADED_KEY, emptySet()).orEmpty()
         val enriched = items.mapIndexed { i, item ->
-            if (i < ICON_TOP_N && r2 != null) {
-                item.copy(iconUrl = resolveIconUrl(item.pkg, item.appName, pm, r2))
-            } else item
+            when {
+                r2 == null -> item
+                partial -> if (item.pkg in uploaded) {
+                    item.copy(iconUrl = runCatching { r2.publicUrl("$ICON_KEY_PREFIX${item.pkg}.png") }.getOrNull())
+                } else item
+                i < ICON_TOP_N -> item.copy(iconUrl = resolveIconUrl(item.pkg, item.appName, pm, r2))
+                else -> item
+            }
         }
 
-        val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(start))
+        val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(start))
         val report = UsageReport(
             deviceId = deviceId,
             userId = userId,
             date = dateStr,
             items = enriched,
             timestamp = System.currentTimeMillis(),
+            partial = partial,
         )
         val payload = json.encodeToString(UsageReport.serializer(), report)
         return mqttManager.publishTelemetry(

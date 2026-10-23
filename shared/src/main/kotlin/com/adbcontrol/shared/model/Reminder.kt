@@ -1,5 +1,8 @@
 package com.adbcontrol.shared.model
 
+import com.adbcontrol.shared.ProtocolVersion
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 
 /**
@@ -10,6 +13,7 @@ import kotlinx.serialization.Serializable
  * [expectAck]=true 时,用户点击任意按钮(或通知本体)即视为"签收",
  * 被控端发布 REMINDER_RESULT 回报,载荷为 [ReminderAck]。
  */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ReminderPayload(
     val title: String,
@@ -20,6 +24,7 @@ data class ReminderPayload(
     val expectAck: Boolean = false,
     /** 关联任务 ID(定时任务场景);手动下发为 null */
     val taskId: Long? = null,
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 )
 
 /**
@@ -27,6 +32,7 @@ data class ReminderPayload(
  *
  * [refId] 为原 REMINDER 消息的 envelope id,主控端据此幂等去重。
  */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ReminderAck(
     val refId: String,
@@ -34,6 +40,7 @@ data class ReminderAck(
     /** 被点击的按钮文字;点击通知本体(非按钮)固定为 OPEN_TOKEN */
     val buttonText: String,
     val timestamp: Long = System.currentTimeMillis(),
+    @EncodeDefault val protocolVersion: Int = ProtocolVersion.CURRENT,
 ) {
     companion object {
         /** 点击通知本体时上报的 buttonText 占位值 */

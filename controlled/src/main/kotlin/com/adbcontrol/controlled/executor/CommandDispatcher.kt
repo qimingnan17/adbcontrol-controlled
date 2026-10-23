@@ -51,11 +51,12 @@ class CommandDispatcher @Inject constructor(
             return noPath(commandId)
         }
         Log.i(TAG, "dispatch ${command.category}/${command.action} via ${matched.name}")
+        // v2.0 契约 §9:回执带上实际执行通道名,供后端 command_audit.channel 记录
         return runCatching {
             matched.execute(command, commandId)
         }.getOrElse {
             fail(commandId, "dispatcher exception=${it.message}")
-        }
+        }.copy(channel = matched.name)
     }
 
     /** 收集当前能力快照(供 [com.adbcontrol.controlled.telemetry.HealthReporter] 上报)。 */

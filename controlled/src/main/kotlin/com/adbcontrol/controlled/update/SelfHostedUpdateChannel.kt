@@ -27,7 +27,7 @@ import java.security.MessageDigest
  *    (serverUrl/deviceId 来自配对时持久化的 [AppConfig],未配对/老数据无 serverUrl 时静默跳过)
  * 2. 优先下载差分包(patchUrl),bsdiff 应用 → APK;失败回退全量 APK(fullApkUrl)
  *    GitHub Release 链接走 [GitHubFastDownloader](优选 IP + 加速代理回退)
- * 3. sha256 校验通过
+ * 3. sha256 校验(v2.0:有值必验,不一致删除文件并上报 UPDATE_HASH_MISMATCH;缺失仅告警)
  * 4. Shizuku 可用 → `pm install -S` stdin 流式静默安装(绕开私有目录权限)
  *    Shizuku 不可用 → FileProvider + 系统安装确认
  * 5. 安装结果 POST /update/report 上报(便于服务端统计分发情况)
@@ -131,12 +131,13 @@ class SelfHostedUpdateChannel(
     override suspend fun download(info: UpdateCheckResponse, onProgress: (Int) -> Unit): File =
         withContext(Dispatchers.IO) {
             // 差分包优先(仅在 bsdiff 引擎可用时尝试,未集成时直接短路走全量包,避免重复下载白耗流量)
-            val patchUrl = info.patchUrl?.takeIf { isBsdiffSupported() }
-            if (patchUrl != null) {
+            val expected = info.sha256?.trim()?.removePrefix("sha256:")?.lowercase()?.takeIf { it.isNotBlank() }
+            val patchUrl = info.patchUrl?.takeIf { isBsdiffSupported() && expected != null }
+            if (patchUrl != null && expected != null) {
                 runCatching {
                     val patchFile = fetch(patchUrl, "update.patch", onProgress)
                     val patched = applyBsdiff(patchFile)
-                    if (verifySha256(patched, info.sha256)) return@withContext patched
+                    if (sha256Hex(patched) == expected) return@withContext patched
                     Log.w(TAG, "patched apk sha256 mismatch, fallback to full")
                 }.onFailure { Log.w(TAG, "patch apply failed, fallback to full", it) }
             } else if (info.patchUrl != null) {
@@ -145,7 +146,19 @@ class SelfHostedUpdateChannel(
             // 全量 fallback
             val fullUrl = info.fullApkUrl ?: error("no fullApkUrl and patch failed")
             val apk = fetch(fullUrl, "update.apk", onProgress)
-            if (!verifySha256(apk, info.sha256)) error("sha256 mismatch")
+            // v2.0 契约 §2:有 sha256 必验,不一致 → 删文件 + UPDATE_HASH_MISMATCH,绝不安装;
+            // 缺失(旧清单行)→ 允许继续但记警告
+            if (expected == null) {
+                Log.w(TAG, "update manifest has no sha256, installing WITHOUT integrity check (legacy row)")
+            } else {
+                val actual = sha256Hex(apk)
+                if (actual != expected) {
+                    runCatching { apk.delete() }
+                    Log.e(TAG, "sha256 mismatch: expected=$expected actual=$actual, apk deleted")
+                    throw UpdateHashMismatchException(expected, actual)
+                }
+                Log.i(TAG, "sha256 verified: $actual")
+            }
             apk
         }
 
@@ -256,7 +269,7 @@ class SelfHostedUpdateChannel(
         return target
     }
 
-    private fun verifySha256(file: File, expected: String): Boolean {
+    private fun sha256Hex(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -266,8 +279,7 @@ class SelfHostedUpdateChannel(
                 digest.update(buffer, 0, n)
             }
         }
-        val actual = digest.digest().joinToString("") { "%02x".format(it) }
-        return actual.equals(expected.removePrefix("sha256:"), ignoreCase = true)
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun currentVersionCode(): Int =
@@ -277,4 +289,10 @@ class SelfHostedUpdateChannel(
         com.adbcontrol.controlled.ControlledApp.appVersionName(context)
 
     companion object { private const val TAG = "SelfHostedUpdate" }
+}
+
+/** v2.0 契约 §2:下载的 APK 与清单 sha256 不一致。上报错误码 [CODE],不安装。 */
+class UpdateHashMismatchException(val expected: String, val actual: String) :
+    IllegalStateException("$CODE expected=$expected actual=$actual") {
+    companion object { const val CODE = "UPDATE_HASH_MISMATCH" }
 }
